@@ -1,0 +1,234 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "AddProduct",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "getClearinghouse",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "enum IProductEngine.HealthType",
+        "name": "healthType",
+        "type": "uint8"
+      }
+    ],
+    "name": "getCoreRisk",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "amount",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "price",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "longWeight",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct IProductEngine.CoreRisk",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getEngineType",
+    "outputs": [
+      {
+        "internalType": "enum IProductEngine.EngineType",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "enum IProductEngine.HealthType",
+        "name": "healthType",
+        "type": "uint8"
+      }
+    ],
+    "name": "getHealthContribution",
+    "outputs": [
+      {
+        "internalType": "int128",
+        "name": "",
+        "type": "int128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getProductIds",
+    "outputs": [
+      {
+        "internalType": "uint32[]",
+        "name": "",
+        "type": "uint32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "getRisk",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "longWeightInitialX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "shortWeightInitialX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "longWeightMaintenanceX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "shortWeightMaintenanceX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "priceX18",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct RiskHelper.Risk",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_clearinghouse",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_offchainExchange",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_quote",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_endpoint",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_admin",
+        "type": "address"
+      }
+    ],
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "int128",
+        "name": "priceX18",
+        "type": "int128"
+      }
+    ],
+    "name": "updatePrice",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "txn",
+        "type": "bytes"
+      }
+    ],
+    "name": "updateProduct",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

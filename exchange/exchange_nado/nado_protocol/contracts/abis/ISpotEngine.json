@@ -1,0 +1,624 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "AddProduct",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint128",
+        "name": "dt",
+        "type": "uint128"
+      },
+      {
+        "indexed": false,
+        "internalType": "int128",
+        "name": "depositRateMultiplierX18",
+        "type": "int128"
+      },
+      {
+        "indexed": false,
+        "internalType": "int128",
+        "name": "borrowRateMultiplierX18",
+        "type": "int128"
+      },
+      {
+        "indexed": false,
+        "internalType": "int128",
+        "name": "feeAmount",
+        "type": "int128"
+      }
+    ],
+    "name": "InterestPayment",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "int128",
+        "name": "amount",
+        "type": "int128"
+      },
+      {
+        "indexed": false,
+        "internalType": "int128",
+        "name": "lastCumulativeMultiplierX18",
+        "type": "int128"
+      }
+    ],
+    "name": "SpotBalance",
+    "type": "event"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "assertUtilization",
+    "outputs": [],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getBalance",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "amount",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct ISpotEngine.Balance",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getClearinghouse",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "getConfig",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "int128",
+            "name": "interestInflectionUtilX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "interestFloorX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "interestSmallCapX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "interestLargeCapX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "withdrawFeeX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "minDepositRateX18",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct ISpotEngine.Config",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "enum IProductEngine.HealthType",
+        "name": "healthType",
+        "type": "uint8"
+      }
+    ],
+    "name": "getCoreRisk",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "amount",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "price",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "longWeight",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct IProductEngine.CoreRisk",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getEngineType",
+    "outputs": [
+      {
+        "internalType": "enum IProductEngine.EngineType",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "enum IProductEngine.HealthType",
+        "name": "healthType",
+        "type": "uint8"
+      }
+    ],
+    "name": "getHealthContribution",
+    "outputs": [
+      {
+        "internalType": "int128",
+        "name": "",
+        "type": "int128"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getNlpUnlockedBalance",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "amount",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct ISpotEngine.Balance",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getProductIds",
+    "outputs": [
+      {
+        "internalType": "uint32[]",
+        "name": "",
+        "type": "uint32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "getRisk",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "longWeightInitialX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "shortWeightInitialX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "longWeightMaintenanceX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "shortWeightMaintenanceX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "priceX18",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct RiskHelper.Risk",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getStateAndBalance",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "cumulativeDepositsMultiplierX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "cumulativeBorrowsMultiplierX18",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "totalDepositsNormalized",
+            "type": "int128"
+          },
+          {
+            "internalType": "int128",
+            "name": "totalBorrowsNormalized",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct ISpotEngine.State",
+        "name": "",
+        "type": "tuple"
+      },
+      {
+        "components": [
+          {
+            "internalType": "int128",
+            "name": "amount",
+            "type": "int128"
+          }
+        ],
+        "internalType": "struct ISpotEngine.Balance",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      }
+    ],
+    "name": "getToken",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_clearinghouse",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_offchainExchange",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_quote",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_endpoint",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_admin",
+        "type": "address"
+      }
+    ],
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int128[]",
+        "name": "totalDeposits",
+        "type": "int128[]"
+      },
+      {
+        "internalType": "int128[]",
+        "name": "totalBorrows",
+        "type": "int128[]"
+      }
+    ],
+    "name": "manualAssert",
+    "outputs": [],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      }
+    ],
+    "name": "socializeSubaccount",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "int128",
+        "name": "amountDelta",
+        "type": "int128"
+      }
+    ],
+    "name": "updateBalance",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "int128",
+        "name": "amountDelta",
+        "type": "int128"
+      },
+      {
+        "internalType": "int128",
+        "name": "quoteDelta",
+        "type": "int128"
+      }
+    ],
+    "name": "updateBalance",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "productId",
+        "type": "uint32"
+      },
+      {
+        "internalType": "int128",
+        "name": "priceX18",
+        "type": "int128"
+      }
+    ],
+    "name": "updatePrice",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "txn",
+        "type": "bytes"
+      }
+    ],
+    "name": "updateProduct",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "subaccount",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "int128",
+        "name": "insurance",
+        "type": "int128"
+      }
+    ],
+    "name": "updateQuoteFromInsurance",
+    "outputs": [
+      {
+        "internalType": "int128",
+        "name": "",
+        "type": "int128"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint128",
+        "name": "dt",
+        "type": "uint128"
+      }
+    ],
+    "name": "updateStates",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

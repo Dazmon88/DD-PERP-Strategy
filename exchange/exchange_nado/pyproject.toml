@@ -1,0 +1,77 @@
+[tool.poetry]
+name = "nado-protocol"
+version = "0.2.8"
+description = "Nado Protocol SDK"
+authors = ["Jeury Mejia <jeury@inkfnd.com>"]
+homepage = "https://nado.xyz"
+maintainers = ["Frank Jia <frank@inkfnd.com>"]
+documentation = "https://nadohq.github.io/nado-python-sdk/"
+readme = "README.md"
+packages = [{include = "nado_protocol"}]
+include = ["nado_protocol/*.json"]
+keywords = ["nado protocol", "nado sdk", "nado protocol api"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pydantic = "^1.10.7"
+web3 = "^6.4.0"
+eth-account = "^0.8.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "*"
+black = "*"
+pytest = "^7.3.1"
+pre-commit = "^3.3.2"
+python-dotenv = "^1.0.0"
+sphinx = "^6.2.1"
+sphinx-rtd-theme = "^1.2.1"
+sphinx-autodoc-typehints = "^1.12.0"
+mypy = "^1.3.0"
+types-requests = "^2.31.0.1"
+coverage = "^7.2.7"
+
+[tool.poetry.scripts]
+test = "pytest:main"
+engine-sanity = "sanity.engine_client:run"
+indexer-sanity = "sanity.indexer_client:run"
+trigger-sanity = "sanity.trigger_client:run"
+contracts-sanity = "sanity.contracts:run"
+client-sanity = "sanity.nado_client:run"
+rewards-sanity = "sanity.rewards:run"
+signing-sanity = "sanity.signing:run"
+margin-sanity = "sanity.margin_manager:run"
+
+[[tool.poetry.source]]
+name = "private"
+url = "https://github.com/nadohq/nado-python-sdk"
+priority = "primary"
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py37']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | venv
+  | venv3.9
+  | venv3.10
+  | venv3.11
+)/
+'''

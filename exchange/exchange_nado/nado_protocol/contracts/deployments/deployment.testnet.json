@@ -1,0 +1,15 @@
+{
+  "publicNodeUrl": "https://rpc-gel-sepolia.inkonchain.com",
+  "explorerUrl": "https://explorer-sepolia.inkonchain.com",
+  "startBlock": 33809962,
+  "deployer": "0x59841b3761Ed1D089a783E4d7CB49E4534CD4F85",
+  "quote": "0x60F50F902b2E91aef7D6c700Eb22599e297fa86F",
+  "querier": "0x8E693BEa316bcC0F4f8be403081b954a0E3743C8",
+  "clearinghouse": "0x23a283B359D55A941bBeEC58801B6b17D955CC73",
+  "endpoint": "0x698D87105274292B5673367DEC81874Ce3633Ac2",
+  "spotEngine": "0x3352b2fF0fAc4ce38A6eA1C188cF4F924df54E5D",
+  "perpEngine": "0x4E859C47fea3666B5053B16C81AF64e77567702e",
+  "airdrop": "0x0000000000000000000000000000000000000000",
+  "staking": "0x0000000000000000000000000000000000000000",
+  "foundationRewardsAirdrop": "0x0000000000000000000000000000000000000000"
+}
