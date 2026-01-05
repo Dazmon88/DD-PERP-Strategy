@@ -306,6 +306,7 @@ def show_menu():
     print("3. 多次做多Nado做空Variational")
     print("4. 多次做空Nado做多Variational")
     print("5. 循环执行：做多Nado做空Variational -> 休眠 -> 做空Nado做多Variational")
+    print("6. 监控Variational持仓")
     print("\n提示: 执行方法时按 Ctrl+C 可返回菜单，菜单界面按 Ctrl+C 退出程序")
     print("=" * 50)
 
@@ -752,16 +753,28 @@ def fill_quantity_variational(page, size):
     
     Args:
         page: Playwright页面对象
-        size: 仓位大小
+        size: 仓位大小（可以是字符串或数字）
     
     Returns:
         bool: 是否成功输入
     """
     try:
+        # 格式化数值，避免浮点数精度问题
+        if isinstance(size, (int, float)):
+            # 保留最多8位小数，去除末尾的0
+            size_str = f"{float(size):.8f}".rstrip('0').rstrip('.')
+        else:
+            # 如果是字符串，尝试转换为浮点数再格式化
+            try:
+                size_float = float(size)
+                size_str = f"{size_float:.8f}".rstrip('0').rstrip('.')
+            except (ValueError, TypeError):
+                size_str = str(size)
+        
         # 精准查找数量输入框
         input_elem = page.query_selector('input[data-testid="quantity-input"]')
         if input_elem:
-            input_elem.fill(str(size))
+            input_elem.fill(size_str)
             return True
         return False
     except Exception as e:
@@ -781,26 +794,40 @@ def click_submit_variational(page, symbol):
         bool: 是否成功点击
     """
     try:
-        # 精准查找确认按钮
-        button = page.query_selector('button[data-testid="submit-button"]')
-        if button:
-            button_text = button.inner_text()
-            if symbol in button_text or "买" in button_text or "卖" in button_text:
-                button.click()
-                return True
+        # 查找所有提交按钮
+        buttons = page.query_selector_all('button[data-testid="submit-button"]')
+        
+        for button in buttons:
+            # 获取按钮文本
+            button_text = button.inner_text().strip()
+            
+            # 只匹配包含symbol的按钮（不匹配中文"买"或"卖"）
+            if symbol not in button_text:
+                continue
+            
+            # 检查按钮是否disabled
+            is_disabled = button.get_attribute('disabled') is not None
+            if is_disabled:
+                continue
+            
+            # 找到匹配的按钮，点击
+            button.click()
+            return True
+        
         return False
     except Exception as e:
         print(f"Variational确认按钮错误: {e}")
         return False
 
 
-def execute_variational_short(pages, configs):
+def execute_variational_short(pages, configs, size=None):
     """
     在variational页面执行做空操作
     
     Args:
         pages: 页面字典
         configs: 配置列表
+        size: 仓位大小，如果为None则从config读取
     """
     if not pages or 'variational' not in pages:
         print("错误: 未找到variational页面")
@@ -809,7 +836,8 @@ def execute_variational_short(pages, configs):
     variational_page = pages['variational']
     config = configs[0]
     symbol = config['symbol']
-    size = config.get('size', '0.0001')
+    if size is None:
+        size = config.get('size', '0.0001')
     
     print(f"\n开始执行Variational做空操作 - {symbol}")
     print("=" * 50)
@@ -826,6 +854,9 @@ def execute_variational_short(pages, configs):
         print("无法继续，输入仓位大小失败")
         return False
     
+    # 等待页面处理输入
+    safe_sleep(0.5)
+    
     # 点击确认按钮
     print("\n步骤3: 点击确认按钮...")
     if click_submit_variational(variational_page, symbol):
@@ -836,13 +867,14 @@ def execute_variational_short(pages, configs):
         return False
 
 
-def execute_variational_long(pages, configs):
+def execute_variational_long(pages, configs, size=None):
     """
     在variational页面执行做多操作
     
     Args:
         pages: 页面字典
         configs: 配置列表
+        size: 仓位大小，如果为None则从config读取
     """
     if not pages or 'variational' not in pages:
         print("错误: 未找到variational页面")
@@ -851,7 +883,8 @@ def execute_variational_long(pages, configs):
     variational_page = pages['variational']
     config = configs[0]
     symbol = config['symbol']
-    size = config.get('size', '0.0001')
+    if size is None:
+        size = config.get('size', '0.0001')
     
     if not click_long_button_variational(variational_page):
         print("Variational做多按钮点击失败")
@@ -860,6 +893,9 @@ def execute_variational_long(pages, configs):
     if not fill_quantity_variational(variational_page, size):
         print("输入仓位大小失败")
         return False
+    
+    # 等待页面处理输入
+    safe_sleep(0.5)
     
     if click_submit_variational(variational_page, symbol):
         print(f"Variational做多已提交: {size}")
@@ -1166,8 +1202,11 @@ def method3(pages, configs):
         if is_filled:
             print("\n执行Variational做空操作...")
             execute_variational_short(pages, configs)
-        else:
-            print("\n订单未成交，跳过Variational操作")
+        
+        # 检查并调整持仓对冲情况
+        print("\n检查持仓对冲情况...")
+        safe_sleep(3)
+        check_and_adjust_hedge(pages, configs, show_details=True)
         
         # 如果不是最后一次执行，随机休眠
         if i < repeat_count:
@@ -1217,8 +1256,6 @@ def method4(pages, configs):
     print(f"\n开始执行多次做空Nado做多Variational操作 - {symbol}")
     print(f"执行次数: {repeat_count}")
     print(f"休眠时间范围: {sleep_min}-{sleep_max}秒")
-    print("=" * 50)
-    
     nado_page = pages['nado']
     
     for i in range(1, repeat_count + 1):
@@ -1232,8 +1269,11 @@ def method4(pages, configs):
         if is_filled:
             print("\n执行Variational做多操作...")
             execute_variational_long(pages, configs)
-        else:
-            print("\n订单未成交，跳过Variational操作")
+        
+        # 检查并调整持仓对冲情况
+        print("\n检查持仓对冲情况...")
+        safe_sleep(3)
+        check_and_adjust_hedge(pages, configs, show_details=True)
         
         # 如果不是最后一次执行，随机休眠
         if i < repeat_count:
@@ -1286,12 +1326,12 @@ def method5(pages, configs):
         if is_filled_long:
             print("\n执行Variational做空操作...")
             execute_variational_short(pages, configs)
-        else:
-            print("\n订单未成交，跳过Variational操作")
         
         # 步骤2: 休眠随机秒数
         sleep_time = random.randint(sleep_min, sleep_max)
         print(f"\n[步骤2] 等待 {sleep_time} 秒...")
+        safe_sleep(3)
+        check_and_adjust_hedge(pages, configs, show_details=True)
         safe_sleep(sleep_time)
         
         # 步骤3: 单次做空Nado做多Variational
@@ -1300,8 +1340,11 @@ def method5(pages, configs):
         if is_filled_short:
             print("\n执行Variational做多操作...")
             execute_variational_long(pages, configs)
-        else:
-            print("\n订单未成交，跳过Variational操作")
+        
+        # 检查持仓对冲情况
+        print("\n[检查2] 检查持仓对冲情况...")
+        safe_sleep(3)
+        check_and_adjust_hedge(pages, configs, show_details=True)
         
         # 休眠后继续下一轮循环
         sleep_time = random.randint(sleep_min, sleep_max)
@@ -1340,6 +1383,221 @@ def get_nado_position(page, symbol):
         return None
 
 
+def get_variational_position(page, symbol):
+    """
+    获取Variational持仓信息
+    
+    Args:
+        page: Playwright页面对象
+        symbol: 交易对符号
+    
+    Returns:
+        str: 持仓信息，如果获取失败返回None
+    """
+    try:
+        # 查找持仓信息，通过class="text-blackwhite"的span元素
+        # 格式如: <span class="text-blackwhite">0.055 BTC</span>
+        selectors = [
+            'span.text-blackwhite'
+        ]
+        
+        for selector in selectors:
+            position_span = page.query_selector(selector)
+            if position_span:
+                position_text = position_span.inner_text().strip()
+                # 检查是否包含交易对符号或BTC/ETH
+                if position_text and (symbol.upper() in position_text.upper() or 'BTC' in position_text or 'ETH' in position_text):
+                    return position_text
+        
+        # 如果上面的选择器都没找到，尝试查找所有包含持仓信息的span
+        all_spans = page.query_selector_all('span.text-blackwhite')
+        for span in all_spans:
+            text = span.inner_text().strip()
+            if text and (symbol.upper() in text.upper() or 'BTC' in text or 'ETH' in text):
+                return text
+        
+        return None
+    except Exception as e:
+        print(f"获取Variational持仓信息时出错: {e}")
+        return None
+
+
+def parse_position(position_str, symbol):
+    """
+    解析持仓字符串，提取数值和方向
+    
+    Args:
+        position_str: 持仓字符串，如 "0.055 BTC" 或 "-0.055 BTC"
+        symbol: 交易对符号
+    
+    Returns:
+        tuple: (数值, 方向) 或 (None, None)
+        方向: 1 表示做多（正数），-1 表示做空（负数），0 表示无持仓
+    """
+    if not position_str:
+        return None, 0
+    
+    try:
+        import re
+        if not position_str:
+            return None, 0
+        
+        # 先检查是否包含负号（包括Unicode减号−和普通减号-）
+        # 检查字符串中任何位置是否包含负号
+        has_negative = '−' in position_str or (position_str.strip() and position_str.strip()[0] in ['-', '−'])
+        
+        # 提取数字部分（可能包含负号和小数点）
+        # 匹配格式如: "0.055 BTC", "-0.055 BTC", "−0.055 BTC", "0.055", "-0.055"
+        # 使用更宽松的正则，匹配所有数字
+        match = re.search(r'([−-]?\d+\.?\d*)', position_str)
+        if match:
+            value_str = match.group(1)
+            # 处理Unicode减号
+            if '−' in value_str:
+                value_str = value_str.replace('−', '-')
+            
+            # 如果字符串中包含负号，但匹配的值没有负号，需要手动添加
+            if has_negative and not value_str.startswith('-'):
+                value = -abs(float(value_str))
+            else:
+                value = float(value_str)
+            
+            if abs(value) < 0.00001:  # 接近0，视为无持仓
+                return 0.0, 0
+            elif value > 0:
+                return abs(value), 1  # 做多
+            else:
+                return abs(value), -1  # 做空
+        return None, 0
+    except Exception as e:
+        print(f"解析持仓失败: {position_str}, 错误: {e}")
+        return None, 0
+
+
+def check_and_adjust_hedge(pages, configs, show_details=True):
+    """
+    检查并调整持仓对冲情况
+    
+    Args:
+        pages: 页面字典
+        configs: 配置列表
+        show_details: 是否显示详细信息，默认True
+    
+    Returns:
+        bool: 是否进行了调整
+    """
+    if not pages or 'nado' not in pages or 'variational' not in pages:
+        if show_details:
+            print("  无法检查持仓：页面未找到")
+        return False
+    
+    nado_page = pages['nado']
+    variational_page = pages['variational']
+    config = configs[0]
+    symbol = config['symbol']
+    size = config.get('size', '0.0001')
+    
+    # 常量定义
+    TOLERANCE = 0.00001  # 对冲容差
+    MIN_SIZE = 0.00001   # 最小交易单位
+    
+    # 获取并解析持仓
+    nado_position_str = get_nado_position(nado_page, symbol)
+    var_position_str = get_variational_position(variational_page, symbol)
+    nado_value, nado_direction = parse_position(nado_position_str, symbol)
+    var_value, var_direction = parse_position(var_position_str, symbol)
+    
+    if show_details:
+        direction_map = {1: '做多', -1: '做空', 0: '无持仓'}
+        print(f"    Nado: {nado_position_str or '未找到'} (数值: {nado_value}, 方向: {direction_map.get(nado_direction, '未知')})")
+        print(f"    Var: {var_position_str or '未找到'} (数值: {var_value}, 方向: {direction_map.get(var_direction, '未知')})")
+    
+    # 检查前置条件
+    if nado_value is None:
+        if show_details:
+            print("  无法获取Nado持仓信息，跳过检查")
+        return False
+    
+    if nado_direction == 0:
+        if show_details:
+            print("  Nado无持仓，暂不处理")
+        return False
+    
+    # 计算实际持仓值（带符号）
+    # parse_position返回的是绝对值和方向，需要计算实际值
+    nado_actual = nado_value * nado_direction
+    var_actual = (var_value * var_direction) if var_value is not None and var_direction != 0 else 0.0
+    
+    # 计算总和：Nado + Var
+    total = nado_actual + var_actual
+    
+    if show_details:
+        print(f"  计算: {nado_actual:.6f} + {var_actual:.6f} = {total:.6f}")
+    
+    # 如果总和接近0，说明已对冲，无需操作
+    if abs(total) <= TOLERANCE:
+        if show_details:
+            print("  持仓已对冲，无需调整")
+        return False
+    
+    # 计算调整参数
+    adjustment_size = abs(total)
+    
+    # 如果total > 0，Var需要做空；如果total < 0，Var需要做多
+    adjustment_direction = "short" if total > 0 else "long"
+    
+    # 检查调整金额是否有效
+    if adjustment_size < MIN_SIZE:
+        adjustment_size = float(size)
+        if show_details:
+            print(f"  调整金额 {abs(total):.6f} 小于最小交易单位，使用配置的size {adjustment_size:.6f}")
+    
+    # 格式化调整金额，避免浮点数精度问题（保留最多8位小数，去除末尾的0）
+    adjustment_size = float(f"{adjustment_size:.8f}".rstrip('0').rstrip('.'))
+    
+    # 执行调整
+    if show_details:
+        print(f"  调整Variational仓位：{adjustment_direction} {adjustment_size}")
+    success = execute_variational_long(pages, configs, size=adjustment_size) if adjustment_direction == "long" else execute_variational_short(pages, configs, size=adjustment_size)
+    if show_details:
+        print(f"  Variational调整{'成功' if success else '失败'}")
+    return success
+
+
+def method6(pages, configs):
+    """比对Nado和Variational持仓，如果不是对冲则调整Variational仓位"""
+    if not configs:
+        print("错误: 未找到配置")
+        return
+    
+    if not pages or 'nado' not in pages or 'variational' not in pages:
+        print("错误: 未找到nado或variational页面")
+        return
+    
+    config = configs[0]
+    symbol = config['symbol']
+    
+    print(f"\n开始比对 {symbol} Nado和Variational持仓")
+    print("如果不是对冲，将调整Variational仓位与Nado保持一致")
+    print("按 Ctrl+C 可停止监控并返回菜单")
+    print("=" * 50)
+    
+    check_count = 0
+    
+    try:
+        while True:
+            check_count += 1
+            current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            print(f"\n[{current_time}] 检查 #{check_count}")
+            
+            check_and_adjust_hedge(pages, configs, show_details=True)
+            
+            safe_sleep(5)
+            
+    except KeyboardInterrupt:
+        print(f"\n\n监控已停止，共检查 {check_count} 次")
+
+
 def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='Nado和Variational跨平台套利交易工具')
@@ -1368,17 +1626,17 @@ def main():
             variational_page = open_page(playwright, config['variational_env_id'], url_1)
             if variational_page:
                 pages['variational'] = variational_page
-                print("✅ Variational页面打开成功")
+                print("Variational页面打开成功")
             else:
-                print("❌ Variational页面打开失败")
+                print("Variational页面打开失败")
             
             print(f"\n正在打开Nado页面: {url_2}")
             nado_page = open_page(playwright, config['nado_env_id'], url_2)
             if nado_page:
                 pages['nado'] = nado_page
-                print("✅ Nado页面打开成功")
+                print("Nado页面打开成功")
             else:
-                print("❌ Nado页面打开失败")
+                print("Nado页面打开失败")
         
         # 检查是否至少有一个页面成功打开
         if not pages:
@@ -1394,7 +1652,7 @@ def main():
         while True:
             try:
                 show_menu()
-                choice = input("请选择 (1-5): ").strip()
+                choice = input("请选择 (1-6): ").strip()
             except KeyboardInterrupt:
                 # 在菜单界面按 Ctrl+C 退出程序
                 print("\n\n退出脚本")
@@ -1418,6 +1676,8 @@ def main():
                     method4(pages, configs)
                 elif choice == "5":
                     method5(pages, configs)
+                elif choice == "6":
+                    method6(pages, configs)
                 else:
                     print("无效选择，请重新输入")
             except KeyboardInterrupt:
