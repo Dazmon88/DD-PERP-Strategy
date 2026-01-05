@@ -7,6 +7,8 @@ import csv
 import os
 import time
 import json
+import random
+import argparse
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -48,17 +50,27 @@ def open_page(playwright, env_id, url):
     if cdp_url is None:
         return None
     
-    browser = playwright.chromium.connect_over_cdp(cdp_url)
-    ctx = browser.contexts[0]
-    page = ctx.new_page()
-    page.goto(url)
-    return page
+    try:
+        browser = playwright.chromium.connect_over_cdp(cdp_url)
+        ctx = browser.contexts[0]
+        page = ctx.new_page()
+        # 增加超时时间到120秒，使用domcontentloaded等待策略（更快）
+        page.goto(url, timeout=120000, wait_until="domcontentloaded")
+        return page
+    except Exception as e:
+        print(f"打开页面失败: {url}")
+        print(f"错误信息: {e}")
+        return None
 
 
 def load_config(csv_file="config.csv"):
     """从CSV文件加载配置"""
     configs = []
-    csv_path = os.path.join(os.path.dirname(__file__), csv_file)
+    # 如果传入的是绝对路径，直接使用；否则相对于脚本目录
+    if os.path.isabs(csv_file):
+        csv_path = csv_file
+    else:
+        csv_path = os.path.join(os.path.dirname(__file__), csv_file)
     
     if not os.path.exists(csv_path):
         print(f"配置文件不存在: {csv_path}")
@@ -75,7 +87,9 @@ def load_config(csv_file="config.csv"):
                 'variational_env_id': row['variational_env_id'].strip(),
                 'symbol': row['symbol'].strip().upper(),
                 'size': row.get('size', '').strip(),
-                'price_offset': row.get('price_offset', '-5').strip()  # 默认-5
+                'price_offset': row.get('price_offset', '-5').strip(),  # 默认-5
+                'repeat_count': row.get('repeat_count', '1').strip(),  # 默认1次
+                'sleep_range': row.get('sleep_range', '10-50').strip()  # 默认10-50秒
             })
     
     return configs
@@ -287,9 +301,12 @@ def show_menu():
     print("\n" + "=" * 50)
     print("菜单")
     print("=" * 50)
-    print("1. 做多Nado做空Variational")
-    print("2. 做空Nado做多Variational")
-    print("按 Ctrl+C 退出")
+    print("1. 单次做多Nado做空Variational")
+    print("2. 单次做空Nado做多Variational")
+    print("3. 多次做多Nado做空Variational")
+    print("4. 多次做空Nado做多Variational")
+    print("5. 循环执行：做多Nado做空Variational -> 休眠 -> 做空Nado做多Variational")
+    print("\n提示: 执行方法时按 Ctrl+C 可返回菜单，菜单界面按 Ctrl+C 退出程序")
     print("=" * 50)
 
 
@@ -775,19 +792,17 @@ def execute_variational_short(pages, configs):
     if not click_short_button_variational(variational_page):
         print("无法继续，做空按钮点击失败")
         return False
-    variational_page.wait_for_timeout(100)
     
     # 输入仓位大小
     print("\n步骤2: 输入仓位大小...")
     if not fill_quantity_variational(variational_page, size):
         print("无法继续，输入仓位大小失败")
         return False
-    variational_page.wait_for_timeout(100)
     
     # 点击确认按钮
     print("\n步骤3: 点击确认按钮...")
     if click_submit_variational(variational_page, symbol):
-        print(f"\n✅ Variational做空订单已提交: {symbol}, 大小: {size}")
+        print(f"\nVariational做空订单已提交: {symbol}, 大小: {size}")
         return True
     else:
         print("提交订单失败")
@@ -814,12 +829,10 @@ def execute_variational_long(pages, configs):
     if not click_long_button_variational(variational_page):
         print("Variational做多按钮点击失败")
         return False
-    variational_page.wait_for_timeout(500)
     
     if not fill_quantity_variational(variational_page, size):
         print("输入仓位大小失败")
         return False
-    variational_page.wait_for_timeout(500)
     
     if click_submit_variational(variational_page, symbol):
         print(f"Variational做多已提交: {size}")
@@ -899,7 +912,7 @@ def fill_nado_order_form(page, order_price, size):
     return True
 
 
-def execute_nado_order_with_retry(page, symbol, size, price_offset, direction, max_retries=3):
+def execute_nado_order_with_retry(page, symbol, size, price_offset, direction, max_retries=999):
     """
     执行Nado下单流程（带重试逻辑）
     
@@ -1014,7 +1027,7 @@ def method1(pages, configs):
     print("=" * 50)
     
     # 执行Nado下单流程（带重试逻辑）
-    is_filled = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "long", max_retries=3)
+    is_filled = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "long", max_retries=999)
     
     # 如果订单成交，执行Variational做空操作
     if is_filled:
@@ -1056,34 +1069,200 @@ def method2(pages, configs):
 
 
 def method3(pages, configs):
-    """测试API获取perp价格"""
+    """多次做多Nado做空Variational"""
     if not configs:
         print("错误: 未找到配置")
         return
     
+    if not pages or 'nado' not in pages:
+        print("错误: 未找到nado页面")
+        return
+    
     config = configs[0]
     symbol = config['symbol']
+    size = config.get('size', '0.0001')
+    price_offset = float(config.get('price_offset', '-5'))
     
-    print(f"\n测试API获取 {symbol} perp价格")
+    # 获取执行次数
+    try:
+        repeat_count = int(config.get('repeat_count', '1'))
+    except ValueError:
+        print("错误: repeat_count 必须是整数")
+        return
+    
+    if repeat_count < 1:
+        print("错误: repeat_count 必须大于0")
+        return
+    
+    # 获取休眠时间范围
+    sleep_range_str = config.get('sleep_range', '10-50')
+    try:
+        sleep_min, sleep_max = map(int, sleep_range_str.split('-'))
+        if sleep_min < 0 or sleep_max < sleep_min:
+            raise ValueError("休眠时间范围无效")
+    except (ValueError, AttributeError):
+        print(f"错误: sleep_range 格式错误，应为 'min-max' 格式（如 '10-50'）")
+        return
+    
+    print(f"\n开始执行多次做多Nado做空Variational操作 - {symbol}")
+    print(f"执行次数: {repeat_count}")
+    print(f"休眠时间范围: {sleep_min}-{sleep_max}秒")
     print("=" * 50)
     
-    prices = get_price_from_api(symbol, product_type="perp")
+    nado_page = pages['nado']
     
-    if prices:
-        print(f"\n✅ 成功获取价格:")
-        if 'bid' in prices:
-            bid_actual = prices['bid'] / 100.0
-            print(f"  bid: ${bid_actual:,.2f} (整数: {prices['bid']})")
-        if 'ask' in prices:
-            ask_actual = prices['ask'] / 100.0
-            print(f"  ask: ${ask_actual:,.2f} (整数: {prices['ask']})")
-        if 'mid' in prices:
-            mid_actual = prices['mid'] / 100.0
-            print(f"  mid: ${mid_actual:,.2f} (整数: {prices['mid']})")
-    else:
-        print(f"\n❌ 获取价格失败")
+    for i in range(1, repeat_count + 1):
+        print(f"第 {i}/{repeat_count} 次执行")
+        
+        # 执行做多Nado操作
+        print(f"\n开始执行做多Nado操作 - {symbol}")
+        is_filled = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "long", max_retries=999)
+        
+        # 如果订单成交，执行Variational做空操作
+        if is_filled:
+            print("\n执行Variational做空操作...")
+            execute_variational_short(pages, configs)
+        else:
+            print("\n订单未成交，跳过Variational操作")
+        
+        # 如果不是最后一次执行，随机休眠
+        if i < repeat_count:
+            sleep_time = random.randint(sleep_min, sleep_max)
+            print(f"\n等待 {sleep_time} 秒后继续下一次执行...")
+            time.sleep(sleep_time)
     
+    print(f"已完成 {repeat_count} 次执行")
+
+
+def method4(pages, configs):
+    """多次做空Nado做多Variational"""
+    if not configs:
+        print("错误: 未找到配置")
+        return
+    
+    if not pages or 'nado' not in pages:
+        print("错误: 未找到nado页面")
+        return
+    
+    config = configs[0]
+    symbol = config['symbol']
+    size = config.get('size', '0.0001')
+    price_offset = float(config.get('price_offset', '-5'))
+    
+    # 获取执行次数
+    try:
+        repeat_count = int(config.get('repeat_count', '1'))
+    except ValueError:
+        print("错误: repeat_count 必须是整数")
+        return
+    
+    if repeat_count < 1:
+        print("错误: repeat_count 必须大于0")
+        return
+    
+    # 获取休眠时间范围
+    sleep_range_str = config.get('sleep_range', '10-50')
+    try:
+        sleep_min, sleep_max = map(int, sleep_range_str.split('-'))
+        if sleep_min < 0 or sleep_max < sleep_min:
+            raise ValueError("休眠时间范围无效")
+    except (ValueError, AttributeError):
+        print(f"错误: sleep_range 格式错误，应为 'min-max' 格式（如 '10-50'）")
+        return
+    
+    print(f"\n开始执行多次做空Nado做多Variational操作 - {symbol}")
+    print(f"执行次数: {repeat_count}")
+    print(f"休眠时间范围: {sleep_min}-{sleep_max}秒")
     print("=" * 50)
+    
+    nado_page = pages['nado']
+    
+    for i in range(1, repeat_count + 1):
+        print(f"第 {i}/{repeat_count} 次执行")
+        
+        # 执行做空Nado操作
+        print(f"\n开始执行做空Nado操作 - {symbol}")
+        is_filled = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "short", max_retries=999)
+        
+        # 如果订单成交，执行Variational做多操作
+        if is_filled:
+            print("\n执行Variational做多操作...")
+            execute_variational_long(pages, configs)
+        else:
+            print("\n订单未成交，跳过Variational操作")
+        
+        # 如果不是最后一次执行，随机休眠
+        if i < repeat_count:
+            sleep_time = random.randint(sleep_min, sleep_max)
+            print(f"\n等待 {sleep_time} 秒后继续下一次执行...")
+            time.sleep(sleep_time)
+    
+    print(f"已完成 {repeat_count} 次执行")
+
+
+def method5(pages, configs):
+    """无限循环执行：做多Nado做空Variational -> 休眠 -> 做空Nado做多Variational"""
+    if not configs:
+        print("错误: 未找到配置")
+        return
+    
+    if not pages or 'nado' not in pages:
+        print("错误: 未找到nado页面")
+        return
+    
+    config = configs[0]
+    symbol = config['symbol']
+    size = config.get('size', '0.0001')
+    price_offset = float(config.get('price_offset', '-5'))
+    
+    # 获取休眠时间范围
+    sleep_range_str = config.get('sleep_range', '10-50')
+    try:
+        sleep_min, sleep_max = map(int, sleep_range_str.split('-'))
+        if sleep_min < 0 or sleep_max < sleep_min:
+            raise ValueError("休眠时间范围无效")
+    except (ValueError, AttributeError):
+        print(f"错误: sleep_range 格式错误，应为 'min-max' 格式（如 '10-50'）")
+        return
+    
+    print(f"\n开始无限循环执行策略 - {symbol}")
+    print(f"休眠时间范围: {sleep_min}-{sleep_max}秒")
+    print("按 Ctrl+C 可停止循环")
+    
+    nado_page = pages['nado']
+    i = 0
+    
+    while True:
+        i += 1
+        print(f"\n第 {i} 轮循环")
+        
+        # 步骤1: 单次做多Nado做空Variational
+        print(f"\n[步骤1] 执行做多Nado做空Variational操作")
+        is_filled_long = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "long", max_retries=999)
+        if is_filled_long:
+            print("\n执行Variational做空操作...")
+            execute_variational_short(pages, configs)
+        else:
+            print("\n订单未成交，跳过Variational操作")
+        
+        # 步骤2: 休眠随机秒数
+        sleep_time = random.randint(sleep_min, sleep_max)
+        print(f"\n[步骤2] 等待 {sleep_time} 秒...")
+        time.sleep(sleep_time)
+        
+        # 步骤3: 单次做空Nado做多Variational
+        print(f"\n[步骤3] 执行做空Nado做多Variational操作")
+        is_filled_short = execute_nado_order_with_retry(nado_page, symbol, size, price_offset, "short", max_retries=999)
+        if is_filled_short:
+            print("\n执行Variational做多操作...")
+            execute_variational_long(pages, configs)
+        else:
+            print("\n订单未成交，跳过Variational操作")
+        
+        # 休眠后继续下一轮循环
+        sleep_time = random.randint(sleep_min, sleep_max)
+        print(f"\n等待 {sleep_time} 秒后继续下一轮循环...")
+        time.sleep(sleep_time)
 
 
 def get_nado_position(page, symbol):
@@ -1119,38 +1298,21 @@ def get_nado_position(page, symbol):
         return None
 
 
-def method4(pages, configs):
-    """获取Nado持仓"""
-    if not configs:
-        print("错误: 未找到配置")
-        return
-    
-    if not pages or 'nado' not in pages:
-        print("错误: 未找到nado页面")
-        return
-    
-    nado_page = pages['nado']
-    config = configs[0]
-    symbol = config['symbol']
-    
-    print(f"\n获取 {symbol} Nado持仓")
-    print("=" * 50)
-    
-    position = get_nado_position(nado_page, symbol)
-    
-    if position:
-        print(f"\n✅ 持仓信息: {position}")
-    else:
-        print(f"\n❌ 未找到持仓信息")
-    
-    print("=" * 50)
-
-
 def main():
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Nado和Variational跨平台套利交易工具')
+    parser.add_argument(
+        '-c', '--config',
+        type=str,
+        default='config.csv',
+        help='指定配置文件路径（默认: config.csv）'
+    )
+    args = parser.parse_args()
+    
     # 从CSV文件读取配置
-    configs = load_config()
+    configs = load_config(args.config)
     if not configs:
-        print("错误: 未找到配置，请检查 config.csv 文件")
+        print(f"错误: 未找到配置，请检查 {args.config} 文件")
         sys.exit(1)
     
     # 先打开所有窗口
@@ -1159,29 +1321,67 @@ def main():
         for config in configs:
             url_1 = get_url(config['symbol'], "variational")
             url_2 = get_url(config['symbol'], "nado")
-            variational_page = open_page(playwright, config['variational_env_id'], url_1)
-            nado_page = open_page(playwright, config['nado_env_id'], url_2)
             
+            print(f"\n正在打开Variational页面: {url_1}")
+            variational_page = open_page(playwright, config['variational_env_id'], url_1)
             if variational_page:
                 pages['variational'] = variational_page
+                print("✅ Variational页面打开成功")
+            else:
+                print("❌ Variational页面打开失败")
+            
+            print(f"\n正在打开Nado页面: {url_2}")
+            nado_page = open_page(playwright, config['nado_env_id'], url_2)
             if nado_page:
                 pages['nado'] = nado_page
+                print("✅ Nado页面打开成功")
+            else:
+                print("❌ Nado页面打开失败")
+        
+        # 检查是否至少有一个页面成功打开
+        if not pages:
+            print("\n错误: 所有页面打开失败，程序退出")
+            sys.exit(1)
+        
+        if 'nado' not in pages:
+            print("\n警告: Nado页面未打开，部分功能可能无法使用")
+        if 'variational' not in pages:
+            print("\n警告: Variational页面未打开，部分功能可能无法使用")
         
         # 窗口打开后，显示菜单
-        try:
-            while True:
+        while True:
+            try:
                 show_menu()
-                choice = input("请选择 (1-4): ").strip()
-                
+                choice = input("请选择 (1-5): ").strip()
+            except KeyboardInterrupt:
+                # 在菜单界面按 Ctrl+C 退出程序
+                print("\n\n退出脚本")
+                sys.exit(0)
+            
+            # 每次执行方法前重新加载配置，这样修改配置文件后无需重启脚本
+            configs = load_config(args.config)
+            if not configs:
+                print(f"错误: 未找到配置，请检查 {args.config} 文件")
+                continue
+            
+            # 执行方法时捕获 Ctrl+C，返回菜单而不是退出程序
+            try:
                 if choice == "1":
                     method1(pages, configs)
                 elif choice == "2":
                     method2(pages, configs)
+                elif choice == "3":
+                    method3(pages, configs)
+                elif choice == "4":
+                    method4(pages, configs)
+                elif choice == "5":
+                    method5(pages, configs)
                 else:
                     print("无效选择，请重新输入")
-        except KeyboardInterrupt:
-            print("\n\n退出脚本")
-            sys.exit(0)
+            except KeyboardInterrupt:
+                # 在执行方法时按 Ctrl+C，返回菜单
+                print("\n\n已取消当前操作，返回菜单...")
+                continue
 
 
 if __name__ == "__main__":
