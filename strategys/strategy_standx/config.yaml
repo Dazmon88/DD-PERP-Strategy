@@ -17,6 +17,7 @@ grid:
 risk:
   enable: false
   adx_threshold: 25
+  adx_max: 60
 
 cancel_stale_orders:
   enable: false

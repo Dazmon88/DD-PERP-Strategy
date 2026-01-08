@@ -358,14 +358,15 @@ def close_position_if_exists(adapter, symbol):
         pass
 
 
-def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold):
+def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold, adx_max=60):
     """根据 ADX 值动态计算 price_spread
     
     Args:
         adx: ADX 指标值
         current_price: 当前价格
         default_spread: 默认 price_spread
-        adx_threshold: ADX 阈值，低于此值使用默认值
+        adx_threshold: ADX 阈值，低于此值使用默认值（通常为25）
+        adx_max: ADX 最大值，超过此值按此值处理（默认60）
     
     Returns:
         int: 计算后的 price_spread
@@ -374,12 +375,14 @@ def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_thres
     
     if adx is not None:
         print(f"ADX(5m): {adx:.2f}")
-        # ADX <= threshold 时使用默认值，ADX > threshold 时按比例增加
+        # ADX <= threshold 时使用默认值
         if adx <= adx_threshold:
             price_spread = default_spread
         else:
-            # ADX 在 [threshold, 100] 范围内映射到 [默认值, 最大值]
-            ratio = (adx - adx_threshold) / (100 - adx_threshold)  # ADX threshold-100 映射到 0-1
+            # 超过 60 按 60 处理
+            effective_adx = min(adx, adx_max)
+            # ADX 在 [threshold, 60] 范围内映射到 [默认值, 最大值]
+            ratio = (effective_adx - adx_threshold) / (adx_max - adx_threshold)  # ADX 25-60 映射到 0-1
             dynamic_spread = default_spread + ratio * (max_spread - default_spread)
             price_spread = int(min(dynamic_spread, max_spread))
         print(f"动态 price_spread: {price_spread} (默认: {default_spread}, 最大: {int(max_spread)})")
@@ -406,7 +409,8 @@ def run_strategy_cycle(adapter):
         indicator_tool = IndicatorTool()
         adx = indicator_tool.get_adx(SYMBOL, "5m", period=14)
         adx_threshold = RISK_CONFIG.get('adx_threshold', 25)
-        price_spread = calculate_dynamic_price_spread(adx, last_price, default_spread, adx_threshold)
+        adx_max = RISK_CONFIG.get('adx_max', 60)
+        price_spread = calculate_dynamic_price_spread(adx, last_price, default_spread, adx_threshold, adx_max)
     else:
         price_spread = default_spread
     
