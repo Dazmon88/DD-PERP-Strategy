@@ -14,12 +14,3 @@ grid:
   order_quantity: 0.001
   sleep_interval: 1
 
-risk:
-  enable: false
-  adx_threshold: 25
-  adx_max: 60
-
-cancel_stale_orders:
-  enable: false
-  stale_seconds: 5
-  cancel_probability: 0.5
