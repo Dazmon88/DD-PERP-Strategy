@@ -340,22 +340,154 @@ def calculate_place_orders(target_long, target_short, current_long, current_shor
 def close_position_if_exists(adapter, symbol):
     """检查持仓，如果有持仓则市价平仓
     
+    在平仓之前，会先取消所有未成交订单以释放保证金，然后尝试平仓。
+    如果平仓失败，会重试直到持仓被关闭。
+    
     注意: StandX 适配器的持仓查询接口可能未实现，此功能可能无法使用
     
     Args:
         adapter: 适配器实例
         symbol: 交易对符号
+    
+    Returns:
+        bool: 如果成功关闭持仓或没有持仓，返回 True；如果无法关闭持仓，返回 False
     """
     try:
         position = adapter.get_position(symbol)
         if position and position.size != Decimal("0"):
-            print(f"检测到持仓: {position.size} {position.side}, 市价平仓中...")
-            adapter.close_position(symbol, order_type="market")
-            print("平仓完成")
-        # 如果 position 为 None，说明 StandX 适配器的持仓查询接口可能未实现
+            print(f"检测到持仓: {position.size} {position.side}, 开始平仓流程...")
+            
+            # Step 1: 取消所有未成交订单以释放保证金
+            print("步骤 1: 取消所有未成交订单以释放保证金...")
+            try:
+                # 优先使用 cancel_all_orders 方法（如果可用）
+                if hasattr(adapter, 'cancel_all_orders'):
+                    try:
+                        adapter.cancel_all_orders(symbol=symbol)
+                        print("已取消所有未成交订单")
+                    except Exception as e:
+                        print(f"使用 cancel_all_orders 失败: {e}，尝试逐个取消...")
+                        # 回退到逐个取消
+                        open_orders = adapter.get_open_orders(symbol=symbol)
+                        if open_orders:
+                            print(f"发现 {len(open_orders)} 个未成交订单，正在逐个取消...")
+                            order_ids = []
+                            for order in open_orders:
+                                try:
+                                    order_id = int(order.order_id)
+                                    order_ids.append(order_id)
+                                except (ValueError, TypeError):
+                                    # 如果订单ID不是整数，尝试使用客户端订单ID
+                                    if order.client_order_id:
+                                        try:
+                                            adapter.cancel_order(client_order_id=order.client_order_id, symbol=symbol)
+                                        except:
+                                            pass
+                            
+                            # 批量取消订单
+                            if order_ids:
+                                try:
+                                    if hasattr(adapter, 'cancel_orders_by_ids'):
+                                        adapter.cancel_orders_by_ids(order_id_list=order_ids)
+                                        print(f"已取消 {len(order_ids)} 个订单")
+                                    else:
+                                        # 如果没有批量撤单方法，逐个撤单
+                                        for order_id in order_ids:
+                                            try:
+                                                adapter.cancel_order(order_id=str(order_id), symbol=symbol)
+                                            except:
+                                                pass
+                                        print(f"已尝试取消 {len(order_ids)} 个订单")
+                                except Exception as e:
+                                    print(f"取消订单时出错: {e}")
+                else:
+                    # 如果没有 cancel_all_orders 方法，手动获取并取消
+                    open_orders = adapter.get_open_orders(symbol=symbol)
+                    if open_orders:
+                        print(f"发现 {len(open_orders)} 个未成交订单，正在取消...")
+                        order_ids = []
+                        for order in open_orders:
+                            try:
+                                order_id = int(order.order_id)
+                                order_ids.append(order_id)
+                            except (ValueError, TypeError):
+                                if order.client_order_id:
+                                    try:
+                                        adapter.cancel_order(client_order_id=order.client_order_id, symbol=symbol)
+                                    except:
+                                        pass
+                        
+                        if order_ids:
+                            try:
+                                if hasattr(adapter, 'cancel_orders_by_ids'):
+                                    adapter.cancel_orders_by_ids(order_id_list=order_ids)
+                                    print(f"已取消 {len(order_ids)} 个订单")
+                                else:
+                                    for order_id in order_ids:
+                                        try:
+                                            adapter.cancel_order(order_id=str(order_id), symbol=symbol)
+                                        except:
+                                            pass
+                                    print(f"已尝试取消 {len(order_ids)} 个订单")
+                            except Exception as e:
+                                print(f"取消订单时出错: {e}")
+                    else:
+                        print("没有未成交订单")
+            except Exception as e:
+                print(f"获取或取消订单时出错: {e}")
+            
+            # Step 2: 等待一小段时间让订单取消生效
+            time.sleep(1)
+            
+            # Step 3: 尝试平仓
+            print("步骤 2: 尝试市价平仓...")
+            max_retries = 3
+            retry_count = 0
+            position_closed = False
+            
+            while retry_count < max_retries and not position_closed:
+                try:
+                    adapter.close_position(symbol, order_type="market")
+                    print(f"平仓指令已发送 (尝试 {retry_count + 1}/{max_retries})")
+                    
+                    # Step 4: 等待并检查持仓是否已关闭
+                    time.sleep(2)  # 等待平仓执行
+                    
+                    # 检查持仓状态
+                    try:
+                        updated_position = adapter.get_position(symbol)
+                        if updated_position is None or updated_position.size == Decimal("0"):
+                            position_closed = True
+                            print("✓ 持仓已成功关闭")
+                        else:
+                            print(f"持仓仍存在: {updated_position.size} {updated_position.side}, 重试中...")
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                time.sleep(2)  # 等待后重试
+                    except Exception as e:
+                        # 如果无法查询持仓，假设平仓成功
+                        print(f"无法验证持仓状态: {e}，假设平仓成功")
+                        position_closed = True
+                        
+                except Exception as e:
+                    print(f"平仓失败 (尝试 {retry_count + 1}/{max_retries}): {e}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(2)  # 等待后重试
+            
+            if not position_closed:
+                print(f"⚠️ 警告: 经过 {max_retries} 次尝试后，持仓可能仍然存在")
+                return False
+            else:
+                return True
+        else:
+            # 没有持仓
+            return True
     except Exception as e:
         # 如果持仓查询失败，静默处理（StandX 可能没有持仓查询接口）
-        pass
+        # 但记录错误以便调试
+        print(f"持仓查询失败: {e}")
+        return True  # 假设没有持仓，继续运行
 
 
 def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold, adx_max=60):
@@ -458,7 +590,16 @@ def run_strategy_cycle(adapter):
         place_long, place_short, adapter, SYMBOL, GRID_CONFIG.get('order_quantity', 0.001)
     )
     # 检查持仓，如果有持仓则市价平仓
-    close_position_if_exists(adapter, SYMBOL)
+    # 在平仓之前会先取消所有订单以释放保证金
+    position_closed = close_position_if_exists(adapter, SYMBOL)
+    
+    # 如果持仓未能关闭，等待一段时间后重试
+    if not position_closed:
+        print("⚠️ 持仓关闭失败，等待 5 秒后重试...")
+        time.sleep(5)
+        position_closed = close_position_if_exists(adapter, SYMBOL)
+        if not position_closed:
+            print("⚠️ 持仓仍然存在，但继续运行策略循环...")
 
 
 def main():
