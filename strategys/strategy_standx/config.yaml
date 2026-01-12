@@ -11,7 +11,7 @@ grid:
   price_step: 10
   grid_count: 10
   price_spread: 50
-  order_quantity: 0.001
+  order_quantity: 0.0001
   sleep_interval: 1
 
 risk:
