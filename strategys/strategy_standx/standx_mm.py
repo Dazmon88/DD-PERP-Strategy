@@ -56,9 +56,6 @@ def initialize_config(config_file="config.yaml"):
 
     config = load_config(config_file)
 
-    #手动输入私钥
-    private_key = input("请输入bsc私钥，确保资金安全：")
-    config['exchange']['private_key'] = private_key.strip()
     STANDX_CONFIG = config['exchange']
     SYMBOL = config['symbol']
     GRID_CONFIG = config['grid']
@@ -470,6 +467,7 @@ def run_strategy_cycle(adapter):
 
 
 def main():
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='StandX 策略脚本')
     parser.add_argument(
@@ -490,6 +488,8 @@ def main():
     except Exception as e:
         print(f"加载配置文件失败: {e}")
         sys.exit(1)
+
+
 
     try:
         adapter = create_adapter(STANDX_CONFIG)

@@ -12,3 +12,5 @@ pyyaml>=6.0.0
 # Technical Analysis dependencies
 pandas>=2.0.0
 TA-Lib>=0.4.28
+
+pynacl
