@@ -79,8 +79,12 @@ class GrvtAdapter(BasePerpAdapter):
             symbols = [symbol] if symbol else []
             positions_data = self.grvt_client.fetch_positions(symbols=symbols)
             
+            print(f"[GRVT] 查询持仓: symbol={symbol}, 返回数据条数={len(positions_data)}")
+            if positions_data:
+                print(f"[GRVT] 持仓数据示例: {positions_data[0]}")
+            
             positions = []
-            for pos_data in positions_data:
+            for idx, pos_data in enumerate(positions_data):
                 
                 # 获取持仓数量
                 size_str = pos_data.get("size", "0")
@@ -91,10 +95,20 @@ class GrvtAdapter(BasePerpAdapter):
                 
                 # 如果数量为 0，跳过
                 if qty == Decimal("0"):
+                    print(f"[GRVT] 持仓数量为 0，跳过")
                     continue
                 
                 # 根据数量正负判断方向
                 side = "long" if qty > 0 else "short"
+                print(f"[GRVT] 持仓方向: {side}, 数量: {abs(qty)}")
+                
+                # 处理 leverage 字段（可能是字符串 "50.0"）
+                leverage_value = None
+                if pos_data.get("leverage"):
+                    try:
+                        leverage_value = int(float(str(pos_data.get("leverage"))))
+                    except (ValueError, TypeError):
+                        leverage_value = None
                 
                 position = Position(
                     symbol=pos_data.get("instrument", symbol or ""),
@@ -103,13 +117,18 @@ class GrvtAdapter(BasePerpAdapter):
                     entry_price=Decimal(str(pos_data.get("entry_price", "0"))),
                     mark_price=Decimal(str(pos_data.get("mark_price", "0"))),
                     unrealized_pnl=Decimal(str(pos_data.get("unrealized_pnl", "0"))),
-                    leverage=int(pos_data.get("leverage", 1)) if pos_data.get("leverage") else None,
+                    leverage=leverage_value,
                     margin_mode=pos_data.get("margin_mode"),
                 )
                 positions.append(position)
+                print(f"[GRVT] 成功创建 Position 对象: {position.symbol}, {position.size}, {position.side}")
             
+            print(f"[GRVT] 最终返回持仓数量: {len(positions)}")
             return positions
         except Exception as e:
+            print(f"[GRVT] 查询持仓异常: {e}")
+            import traceback
+            traceback.print_exc()
             raise Exception(f"GRVT 查询持仓失败: {e}")
     
     def _grvt_order_to_order(self, grvt_order: dict, symbol: str) -> Order:
