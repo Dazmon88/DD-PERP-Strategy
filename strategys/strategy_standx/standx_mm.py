@@ -466,11 +466,11 @@ def run_strategy_cycle(adapter):
     # 检查持仓，如果有持仓则市价平仓
     close_position_if_exists(adapter, SYMBOL)
 
-def exit_handler(adapter, symbol):
-    print("策略脚本退出，执行清理操作...")
-    if adapter and symbol:
-        print(adapter.cancel_all_orders(symbol=symbol))
-    print("清理完成，退出。")
+def exit_handler(adapter):
+    print("意外或手动停止，退出处理中...")
+    if adapter:
+        adapter.cancel_all_orders(symbol=SYMBOL)
+    print("已清除所有挂单，策略退出。")
 
 
 def main():
@@ -503,8 +503,7 @@ def main():
         sleep_interval = GRID_CONFIG.get('sleep_interval', 60)
 
         # 注册退出处理函数
-        symbol = GRID_CONFIG.get("symbol")
-        atexit.register(exit_handler, adapter, symbol)
+        atexit.register(exit_handler, adapter)
 
         print("策略开始运行，按 Ctrl+C 停止...")
         print(f"休眠间隔: {sleep_interval} 秒\n")
@@ -515,7 +514,6 @@ def main():
                 print(f"\n等待 {sleep_interval} 秒后继续...\n")
                 time.sleep(sleep_interval)
             except KeyboardInterrupt as e:
-                print("\n收到 Ctrl+C，准备退出...")
                 break
             except Exception as e:
                 print(f"策略循环错误: {e}")
@@ -525,9 +523,6 @@ def main():
     except Exception as e:
         print(f"错误: {e}")
         return None
-    finally:
-        # 关键：这里保证一定执行（除非被硬杀/崩溃）
-        exit_handler(adapter, symbol)
 
 
 if __name__ == "__main__":
