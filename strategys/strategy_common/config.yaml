@@ -1,0 +1,30 @@
+exchanges:
+  standx:
+    exchange_name: standx
+    api_key: ""  
+    signing_key: ""  
+    private_key: ""  
+    chain: bsc  
+    symbol: BTC-USD
+  
+  grvt:
+    exchange_name: grvt
+    api_key: ""
+    trading_account_id: ""
+    private_key: ""
+    env: prod
+    symbol: BTC-USDT
+    
+grid:
+  upper_price: 200000
+  lower_price: 60000
+  price_step: 20
+  grid_count: 3
+  price_spread: 50
+  order_quantity: 0.002
+  sleep_interval: 1
+
+risk:
+  enable: true
+  adx_threshold: 16
+  adx_max: 60

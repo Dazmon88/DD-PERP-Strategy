@@ -31,8 +31,12 @@ DD Strategy Bot 是一个免费开源的多平台永续合约策略系统，支�
 #### 方法 1: 使用 Git（推荐）
 
 ```bash
+# 首次下载
 git clone https://github.com/Dazmon88/DD-strategy-bot.git
 cd DD-strategy-bot
+
+# 更新代码（后续更新时使用）
+git pull origin main
 ```
 
 #### 方法 2: 使用 wget（无需 Git）
@@ -65,6 +69,8 @@ cd DD-strategy-bot-main
 - **Ubuntu/Debian:** `sudo apt-get install unzip`
 - **CentOS/RHEL:** `sudo yum install unzip`
 - **macOS:** `brew install unzip`（需要先安装 Homebrew）
+
+**更新代码提示：** 如果使用 Git 下载的项目，后续更新时使用 `git pull origin main`。如果本地有修改，建议先备份配置文件。
 
 ## 📦 安装依赖
 

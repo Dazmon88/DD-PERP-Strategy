@@ -19,7 +19,7 @@ from adapters import create_adapter
 from risk import IndicatorTool
 
 # 全局配置变量
-STANDX_CONFIG = None
+EXCHANGE_CONFIG = None
 SYMBOL = None
 GRID_CONFIG = None
 RISK_CONFIG = None
@@ -51,14 +51,88 @@ def load_config(config_file="config.yaml"):
     return config
 
 
-def initialize_config(config_file="config.yaml"):
-    """初始化全局配置变量"""
-    global STANDX_CONFIG, SYMBOL, GRID_CONFIG, RISK_CONFIG, CANCEL_STALE_ORDERS_CONFIG
+def convert_symbol_format(symbol, exchange_name):
+    """根据交易所类型转换交易对格式
 
+    Args:
+        symbol: 原始交易对，如 "BTC-USDT" 或 "BTC-USD"
+        exchange_name: 交易所名称，如 "standx" 或 "grvt"
+
+    Returns:
+        转换后的交易对格式
+    """
+    if exchange_name.lower() == "grvt":
+        # GRVT 使用 BTC_USDT_Perp 格式
+        # 将 "BTC-USDT" 转换为 "BTC_USDT_Perp"
+        if "-" in symbol:
+            base, quote = symbol.split("-", 1)
+            return f"{base}_{quote}_Perp"
+        return symbol
+    else:
+        # StandX 等其他交易所保持原格式
+        return symbol
+
+
+def convert_symbol_for_adx(symbol):
+    """将交易对格式转换为指标需要的格式（币安格式）
+
+    ADX 指标使用币安数据，IndicatorTool 内部会将 "BTC-USD" 转换为 "BTCUSDT"
+    对于 GRVT 的 "BTC_USDT_Perp" 格式，需要先转换为 "BTC-USDT" 格式
+
+    Args:
+        symbol: 交易对符号，支持多种格式：
+               - "BTC-USD" (StandX 格式)
+               - "BTC-USDT" (通用格式)
+               - "BTC_USDT_Perp" (GRVT 格式)
+
+    Returns:
+        转换后的交易对格式，用于 ADX 指标计算
+    """
+    if "_" in symbol and "_Perp" in symbol:
+        # GRVT 格式: BTC_USDT_Perp -> BTC-USDT
+        return symbol.replace("_Perp", "").replace("_", "-")
+    else:
+        # StandX 等其他格式保持原样
+        return symbol
+
+
+def initialize_config(config_file="config.yaml", active_exchange_override=None):
+    """初始化全局配置变量
+
+    使用多交易所配置格式：
+    - exchanges: 包含多个交易所的配置
+    - 必须通过命令行参数 --exchange 指定当前使用的交易所
+
+    Args:
+        config_file: 配置文件路径
+        active_exchange_override: 通过命令行参数指定的交易所名称（必需）
+    """
+    global EXCHANGE_CONFIG, SYMBOL, GRID_CONFIG, RISK_CONFIG, CANCEL_STALE_ORDERS_CONFIG
+    
     config = load_config(config_file)
 
-    STANDX_CONFIG = config['exchange']
-    SYMBOL = config['symbol']
+    # 检查必需的配置项
+    if 'exchanges' not in config:
+        raise ValueError("配置错误: 必须提供 exchanges 配置")
+
+    # 必须通过命令行参数指定交易所
+    if not active_exchange_override:
+        raise ValueError("配置错误: 必须通过命令行参数 --exchange 指定交易所")
+
+    active_exchange_name = active_exchange_override
+    if active_exchange_name not in config['exchanges']:
+        raise ValueError(f"配置错误: 交易所 '{active_exchange_name}' 在 exchanges 中不存在")
+
+    EXCHANGE_CONFIG = config['exchanges'][active_exchange_name].copy()
+    raw_symbol = EXCHANGE_CONFIG.pop('symbol', None)
+
+    if not raw_symbol:
+        raise ValueError(f"配置错误: exchanges.{active_exchange_name} 中缺少 symbol 配置")
+
+    exchange_name = EXCHANGE_CONFIG.get('exchange_name', active_exchange_name)
+    # 根据交易所类型转换交易对格式
+    SYMBOL = convert_symbol_format(raw_symbol, exchange_name)
+
     GRID_CONFIG = config['grid']
     RISK_CONFIG = config.get('risk', {})
     CANCEL_STALE_ORDERS_CONFIG = config.get('cancel_stale_orders', {})
@@ -340,7 +414,7 @@ def calculate_place_orders(target_long, target_short, current_long, current_shor
 
 
 def close_position_if_exists(adapter, symbol):
-    """检查持仓，如果有持仓则先取消所有未成交订单，然后市价平仓
+    """检查持仓，如果有持仓则市价平仓
     
     注意: StandX 适配器的持仓查询接口可能未实现，此功能可能无法使用
     
@@ -349,7 +423,9 @@ def close_position_if_exists(adapter, symbol):
         symbol: 交易对符号
     """
     try:
-        position = adapter.get_position(symbol)
+        positions = adapter.get_positions(symbol)
+        # get_positions 返回列表，取第一个持仓
+        position = positions[0] if positions else None
         if position and position.size != Decimal("0"):
             print(f"检测到持仓: {position.size} {position.side}")
             print("取消所有未成交订单...")
@@ -413,7 +489,8 @@ def run_strategy_cycle(adapter):
 
     if RISK_CONFIG.get('enable', False):
         indicator_tool = IndicatorTool()
-        adx = indicator_tool.get_adx(SYMBOL, "5m", period=14)
+        adx_symbol = convert_symbol_for_adx(SYMBOL)
+        adx = indicator_tool.get_adx(adx_symbol, "5m", period=14)
         adx_threshold = RISK_CONFIG.get('adx_threshold', 25)
         adx_max = RISK_CONFIG.get('adx_max', 60)
         price_spread = calculate_dynamic_price_spread(adx, last_price, default_spread, adx_threshold, adx_max)
@@ -476,19 +553,26 @@ def exit_handler(adapter):
 def main():
 
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='StandX 策略脚本')
+    parser = argparse.ArgumentParser(description='网格交易策略脚本（支持 StandX 和 GRVT）')
     parser.add_argument(
         '-c', '--config',
         type=str,
         default='config.yaml',
         help='指定配置文件路径（默认: config.yaml）'
     )
+    parser.add_argument(
+        '-e', '--exchange',
+        type=str,
+        required=True,
+        help='指定要使用的交易所名称（必需），例如: standx 或 grvt'
+    )
     args = parser.parse_args()
 
     # 加载配置文件
     try:
         print(f"加载配置文件: {args.config}")
-        initialize_config(args.config)
+        print(f"使用交易所: {args.exchange}")
+        initialize_config(args.config, active_exchange_override=args.exchange)
     except FileNotFoundError as e:
         print(f"错误: {e}")
         sys.exit(1)
@@ -497,7 +581,7 @@ def main():
         sys.exit(1)
 
     try:
-        adapter = create_adapter(STANDX_CONFIG)
+        adapter = create_adapter(EXCHANGE_CONFIG)
         adapter.connect()
 
         sleep_interval = GRID_CONFIG.get('sleep_interval', 60)

@@ -29,8 +29,10 @@ class IndicatorTool:
             Optional[float]: ADX 值，如果计算失败返回 None
         """
         try:
-            # 转换交易对格式：BTC-USD -> BTCUSDT
-            binance_symbol = symbol.replace("-", "").replace("USD", "USDT")
+            # 转换交易对格式为币安格式: BTC-USD/BTC-USDT/BTC_USDT_Perp -> BTCUSDT
+            binance_symbol = symbol.upper().replace("_PERP", "").replace("-", "").replace("_", "")
+            if binance_symbol.endswith("USD") and not binance_symbol.endswith("USDT"):
+                binance_symbol = binance_symbol[:-3] + "USDT"
             
             # 从币安获取K线数据
             url = f"https://api.binance.com/api/v3/klines"
