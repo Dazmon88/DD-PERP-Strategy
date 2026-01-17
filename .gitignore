@@ -1,5 +1,5 @@
 /venv
 .DS_Store
-strategys/strategy_standx/config.yaml
+strategys/strategy_common/config.yaml
 *.pyc
 .idea
