@@ -9,6 +9,7 @@ import time
 import random
 import argparse
 from decimal import Decimal
+import atexit
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
@@ -40,23 +41,23 @@ def load_config(config_file="config.yaml"):
         config_path = os.path.join(current_dir, config_file)
     else:
         config_path = config_file
-    
+
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    
+
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    
+
     return config
 
 
 def convert_symbol_format(symbol, exchange_name):
     """根据交易所类型转换交易对格式
-    
+
     Args:
         symbol: 原始交易对，如 "BTC-USDT" 或 "BTC-USD"
         exchange_name: 交易所名称，如 "standx" 或 "grvt"
-    
+
     Returns:
         转换后的交易对格式
     """
@@ -74,16 +75,16 @@ def convert_symbol_format(symbol, exchange_name):
 
 def convert_symbol_for_adx(symbol):
     """将交易对格式转换为指标需要的格式（币安格式）
-    
+
     ADX 指标使用币安数据，IndicatorTool 内部会将 "BTC-USD" 转换为 "BTCUSDT"
     对于 GRVT 的 "BTC_USDT_Perp" 格式，需要先转换为 "BTC-USDT" 格式
-    
+
     Args:
         symbol: 交易对符号，支持多种格式：
                - "BTC-USD" (StandX 格式)
                - "BTC-USDT" (通用格式)
                - "BTC_USDT_Perp" (GRVT 格式)
-    
+
     Returns:
         转换后的交易对格式，用于 ADX 指标计算
     """
@@ -97,11 +98,11 @@ def convert_symbol_for_adx(symbol):
 
 def initialize_config(config_file="config.yaml", active_exchange_override=None):
     """初始化全局配置变量
-    
+
     使用多交易所配置格式：
     - exchanges: 包含多个交易所的配置
     - 必须通过命令行参数 --exchange 指定当前使用的交易所
-    
+
     Args:
         config_file: 配置文件路径
         active_exchange_override: 通过命令行参数指定的交易所名称（必需）
@@ -109,29 +110,29 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
     global EXCHANGE_CONFIG, SYMBOL, GRID_CONFIG, RISK_CONFIG, CANCEL_STALE_ORDERS_CONFIG
     
     config = load_config(config_file)
-    
+
     # 检查必需的配置项
     if 'exchanges' not in config:
         raise ValueError("配置错误: 必须提供 exchanges 配置")
-    
+
     # 必须通过命令行参数指定交易所
     if not active_exchange_override:
         raise ValueError("配置错误: 必须通过命令行参数 --exchange 指定交易所")
-    
+
     active_exchange_name = active_exchange_override
     if active_exchange_name not in config['exchanges']:
         raise ValueError(f"配置错误: 交易所 '{active_exchange_name}' 在 exchanges 中不存在")
-    
+
     EXCHANGE_CONFIG = config['exchanges'][active_exchange_name].copy()
     raw_symbol = EXCHANGE_CONFIG.pop('symbol', None)
-    
+
     if not raw_symbol:
         raise ValueError(f"配置错误: exchanges.{active_exchange_name} 中缺少 symbol 配置")
-    
+
     exchange_name = EXCHANGE_CONFIG.get('exchange_name', active_exchange_name)
     # 根据交易所类型转换交易对格式
     SYMBOL = convert_symbol_format(raw_symbol, exchange_name)
-    
+
     GRID_CONFIG = config['grid']
     RISK_CONFIG = config.get('risk', {})
     CANCEL_STALE_ORDERS_CONFIG = config.get('cancel_stale_orders', {})
@@ -145,21 +146,21 @@ def generate_grid_arrays(current_price, price_step, grid_count, price_spread):
         raise ValueError("grid_count 必须大于等于 0")
     if price_spread < 0:
         raise ValueError("price_spread 必须大于等于 0")
-    
+
     # 计算价格上下限（当前价格的上下1%）
     price_upper_limit = current_price * 1.01  # 上限：当前价格 +1%
-    price_lower_limit = current_price * 0.99   # 下限：当前价格 -1%
-    
+    price_lower_limit = current_price * 0.99  # 下限：当前价格 -1%
+
     # 计算 bid 和 ask 价格
     bid_price = current_price - price_spread
     ask_price = current_price + price_spread
-    
+
     # 将 bid 价格向下取整到最近的 price_step 倍数
     bid_base = int(bid_price / price_step) * price_step
-    
+
     # 将 ask 价格向上取整到最近的 price_step 倍数
     ask_base = int((ask_price + price_step - 1) / price_step) * price_step
-    
+
     # 做多数组：从 bid_base 向下 grid_count 个（包括 bid_base）
     long_grid = []
     for i in range(grid_count):
@@ -168,7 +169,7 @@ def generate_grid_arrays(current_price, price_step, grid_count, price_spread):
         if price >= price_lower_limit:
             long_grid.append(price)
     long_grid = sorted(long_grid)
-    
+
     # 做空数组：从 ask_base 向上 grid_count 个（包括 ask_base）
     short_grid = []
     for i in range(grid_count):
@@ -177,7 +178,7 @@ def generate_grid_arrays(current_price, price_step, grid_count, price_spread):
         if price <= price_upper_limit:
             short_grid.append(price)
     short_grid = sorted(short_grid)
-    
+
     return long_grid, short_grid
 
 
@@ -193,14 +194,14 @@ def get_pending_orders_arrays(adapter, symbol):
     """
     try:
         open_orders = adapter.get_open_orders(symbol=symbol)
-        
+
         # 做多订单：side 为 "buy" 或 "long"
         long_prices = []
         long_price_to_ids = {}  # 价格 -> 订单ID列表
         # 做空订单：side 为 "sell" 或 "short"
         short_prices = []
         short_price_to_ids = {}  # 价格 -> 订单ID列表
-        
+
         for order in open_orders:
             # 只处理未成交的订单（状态为 pending, open, partially_filled）
             if order.status in ["pending", "open", "partially_filled"]:
@@ -210,7 +211,7 @@ def get_pending_orders_arrays(adapter, symbol):
                         order_id = int(order.order_id)
                     except (ValueError, TypeError):
                         continue  # 跳过无效的订单ID
-                    
+
                     if order.side in ["buy", "long"]:
                         if price not in long_prices:
                             long_prices.append(price)
@@ -223,7 +224,7 @@ def get_pending_orders_arrays(adapter, symbol):
                         if price not in short_price_to_ids:
                             short_price_to_ids[price] = []
                         short_price_to_ids[price].append(order_id)
-        
+
         return sorted(long_prices), sorted(short_prices), long_price_to_ids, short_price_to_ids
     except NotImplementedError:
         # 如果适配器未实现，返回空数组
@@ -246,7 +247,7 @@ def cancel_stale_order_ids(adapter, symbol, stale_seconds=5, cancel_probability=
         open_orders = adapter.get_open_orders(symbol=symbol)
         stale_order_ids = []
         current_time = int(time.time() * 1000)  # 当前时间（毫秒）
-        
+
         for order in open_orders:
             # 只处理未成交的订单
             if order.status in ["pending", "open", "partially_filled"]:
@@ -261,10 +262,10 @@ def cancel_stale_order_ids(adapter, symbol, stale_seconds=5, cancel_probability=
                                 stale_order_ids.append(order_id)
                             except (ValueError, TypeError):
                                 pass
-        
+
         # 如果有需要取消的订单，执行批量撤单
         if stale_order_ids:
-            print(f"随机取消未成交时间>{stale_seconds}秒的订单: {stale_order_ids} (概率: {cancel_probability*100}%)")
+            print(f"随机取消未成交时间>{stale_seconds}秒的订单: {stale_order_ids} (概率: {cancel_probability * 100}%)")
             try:
                 if hasattr(adapter, 'cancel_orders_by_ids'):
                     adapter.cancel_orders_by_ids(order_id_list=stale_order_ids)
@@ -286,7 +287,7 @@ def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_
     """
     if not cancel_long and not cancel_short:
         return
-    
+
     # 根据价格映射获取订单ID
     all_order_ids = []
     for price in cancel_long:
@@ -295,10 +296,10 @@ def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_
     for price in cancel_short:
         if price in short_price_to_ids:
             all_order_ids.extend(short_price_to_ids[price])
-    
+
     if not all_order_ids:
         return
-    
+
     # 批量撤单
     try:
         if hasattr(adapter, 'cancel_orders_by_ids'):
@@ -326,9 +327,9 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
     """
     if not place_long and not place_short:
         return
-    
+
     quantity_decimal = Decimal(str(quantity))
-    
+
     # 做多订单：buy
     for price in place_long:
         try:
@@ -344,7 +345,7 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
             print(f"[下单成功][多单] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
         except Exception as e:
             print(f"[下单失败][多单] 价格={price}, 数量={quantity_decimal}, 错误={e}")
-    
+
     # 做空订单：sell
     for price in place_short:
         try:
@@ -377,13 +378,13 @@ def calculate_cancel_orders(target_long, target_short, current_long, current_sho
     # 将目标数组转换为集合，便于查找
     target_long_set = set(target_long)
     target_short_set = set(target_short)
-    
+
     # 撤单做多数组：在当前做多数组中，但不在目标做多数组中的价格
     cancel_long = [price for price in current_long if price not in target_long_set]
-    
+
     # 撤单做空数组：在当前做空数组中，但不在目标做空数组中的价格
     cancel_short = [price for price in current_short if price not in target_short_set]
-    
+
     return sorted(cancel_long), sorted(cancel_short)
 
 
@@ -402,13 +403,13 @@ def calculate_place_orders(target_long, target_short, current_long, current_shor
     # 将当前数组转换为集合，便于查找
     current_long_set = set(current_long)
     current_short_set = set(current_short)
-    
+
     # 下单做多数组：在目标做多数组中，但不在当前做多数组中的价格
     place_long = [price for price in target_long if price not in current_long_set]
-    
+
     # 下单做空数组：在目标做空数组中，但不在当前做空数组中的价格
     place_short = [price for price in target_short if price not in current_short_set]
-    
+
     return sorted(place_long), sorted(place_short)
 
 
@@ -453,9 +454,9 @@ def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_thres
         int: 计算后的 price_spread
     """
     max_spread = current_price * 0.01  # 最大为价格的1%
-    
+
     if adx is not None:
-        print(f"ADX(5m): {adx:.2f}")
+        print(f"ADX(5m): {adx:.2f}", end='; ')
         # ADX <= threshold 时使用默认值
         if adx <= adx_threshold:
             price_spread = default_spread
@@ -485,7 +486,7 @@ def run_strategy_cycle(adapter):
 
     # 获取 ADX 指标并动态调整 price_spread
     default_spread = GRID_CONFIG['price_spread']
-    
+
     if RISK_CONFIG.get('enable', False):
         indicator_tool = IndicatorTool()
         adx_symbol = convert_symbol_for_adx(SYMBOL)
@@ -495,28 +496,28 @@ def run_strategy_cycle(adapter):
         price_spread = calculate_dynamic_price_spread(adx, last_price, default_spread, adx_threshold, adx_max)
     else:
         price_spread = default_spread
-    
+
     long_grid, short_grid = generate_grid_arrays(
-        last_price, 
-        GRID_CONFIG['price_step'], 
+        last_price,
+        GRID_CONFIG['price_step'],
         GRID_CONFIG['grid_count'],
         price_spread
     )
     print(f"做多数组: {long_grid}")
     print(f"做空数组: {short_grid}")
-    
+
     # 获取未成交订单数组和价格到订单ID的映射
     long_pending, short_pending, long_price_to_ids, short_price_to_ids = get_pending_orders_arrays(adapter, SYMBOL)
     print(f"当前做多数组: {long_pending}")
     print(f"当前做空数组: {short_pending}")
-    
+
     # 计算需要撤单的数组
     cancel_long, cancel_short = calculate_cancel_orders(
         long_grid, short_grid, long_pending, short_pending
     )
     print(f"撤单做多数组: {cancel_long}")
     print(f"撤单做空数组: {cancel_short}")
-    
+
     # 执行撤单
     cancel_orders_by_prices(
         cancel_long, cancel_short, long_price_to_ids, short_price_to_ids, adapter
@@ -527,14 +528,14 @@ def run_strategy_cycle(adapter):
         stale_seconds = CANCEL_STALE_ORDERS_CONFIG.get('stale_seconds', 5)
         cancel_probability = CANCEL_STALE_ORDERS_CONFIG.get('cancel_probability', 0.5)
         cancel_stale_order_ids(adapter, SYMBOL, stale_seconds, cancel_probability)
-    
+
     # 计算需要下单的数组
     place_long, place_short = calculate_place_orders(
         long_grid, short_grid, long_pending, short_pending
     )
     print(f"下单做多数组: {place_long}")
     print(f"下单做空数组: {place_short}")
-    
+
     # 执行下单
     place_orders_by_prices(
         place_long, place_short, adapter, SYMBOL, GRID_CONFIG.get('order_quantity', 0.001)
@@ -542,8 +543,15 @@ def run_strategy_cycle(adapter):
     # 检查持仓，如果有持仓则市价平仓
     close_position_if_exists(adapter, SYMBOL)
 
+def exit_handler(adapter):
+    print("意外或手动停止，退出处理中...")
+    if adapter:
+        adapter.cancel_all_orders(symbol=SYMBOL)
+    print("已清除所有挂单，策略退出。")
+
 
 def main():
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='网格交易策略脚本（支持 StandX 和 GRVT）')
     parser.add_argument(
@@ -559,7 +567,7 @@ def main():
         help='指定要使用的交易所名称（必需），例如: standx 或 grvt'
     )
     args = parser.parse_args()
-    
+
     # 加载配置文件
     try:
         print(f"加载配置文件: {args.config}")
@@ -571,29 +579,31 @@ def main():
     except Exception as e:
         print(f"加载配置文件失败: {e}")
         sys.exit(1)
-    
+
     try:
         adapter = create_adapter(EXCHANGE_CONFIG)
         adapter.connect()
-        
+
         sleep_interval = GRID_CONFIG.get('sleep_interval', 60)
-        
+
+        # 注册退出处理函数
+        atexit.register(exit_handler, adapter)
+
         print("策略开始运行，按 Ctrl+C 停止...")
         print(f"休眠间隔: {sleep_interval} 秒\n")
-        
+
         while True:
             try:
                 run_strategy_cycle(adapter)
                 print(f"\n等待 {sleep_interval} 秒后继续...\n")
                 time.sleep(sleep_interval)
-            except KeyboardInterrupt:
-                print("\n\n策略已停止")
+            except KeyboardInterrupt as e:
                 break
             except Exception as e:
                 print(f"策略循环错误: {e}")
                 print(f"等待 {sleep_interval} 秒后重试...\n")
                 time.sleep(sleep_interval)
-        
+
     except Exception as e:
         print(f"错误: {e}")
         return None
