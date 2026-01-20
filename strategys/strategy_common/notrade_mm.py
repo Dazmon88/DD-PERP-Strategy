@@ -706,6 +706,32 @@ def close_position_if_exists(adapter, symbol):
         pass
 
 
+def _start_position_guard_thread(adapter, symbol, interval_seconds=1):
+    """启动持仓监控线程，使用 API 每秒检查并自动平仓"""
+    def guard_worker():
+        while True:
+            try:
+                positions = adapter.get_positions(symbol)
+                position = positions[0] if positions else None
+                if position and getattr(position, "size", None) is not None:
+                    size = Decimal(str(position.size))
+                    if size != Decimal("0"):
+                        print(f"检测到持仓(监控线程): {size} {getattr(position, 'side', '')}")
+                        try:
+                            adapter.cancel_all_orders(symbol=symbol)
+                        except Exception:
+                            pass
+                        try:
+                            adapter.close_position(symbol, order_type="market")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            time.sleep(interval_seconds)
+
+    threading.Thread(target=guard_worker, daemon=True).start()
+
+
 def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold, adx_max=60):
     """根据 ADX 值动态计算 price_spread
     
@@ -840,6 +866,7 @@ def main():
         adapter.connect()
         exchange_name = EXCHANGE_CONFIG.get("exchange_name", args.exchange).lower()
         _start_wss_thread(adapter, exchange_name, SYMBOL)
+        _start_position_guard_thread(adapter, SYMBOL, interval_seconds=1)
         if RISK_CONFIG.get('enable', False):
             _start_adx_thread(SYMBOL)
         
