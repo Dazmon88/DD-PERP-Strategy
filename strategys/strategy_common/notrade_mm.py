@@ -8,10 +8,6 @@ import yaml
 import time
 import random
 import argparse
-import threading
-import asyncio
-import queue
-from typing import Any
 from decimal import Decimal
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,209 +23,6 @@ SYMBOL = None
 GRID_CONFIG = None
 RISK_CONFIG = None
 CANCEL_STALE_ORDERS_CONFIG = None
-WSS_STATE = {
-    "price": {},
-    "orders": {},
-    "positions": {},
-}
-WSS_LOCK = threading.Lock()
-WSS_READY = False
-WSS_CLOSE_QUEUE = queue.Queue()
-WSS_CLOSE_PENDING = set()
-ADX_STATE = {"value": None, "ts": 0}
-ADX_LOCK = threading.Lock()
-RECENT_ORDER_TS = {}
-RECENT_ORDER_LOCK = threading.Lock()
-RECENT_ORDER_COOLDOWN = 1.0  # 秒，同价位下单冷却
-
-
-def _to_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _update_price(symbol, data):
-    with WSS_LOCK:
-        WSS_STATE["price"][symbol] = data
-
-
-def _update_order(symbol, order_id, data):
-    if not order_id:
-        return
-    with WSS_LOCK:
-        WSS_STATE["orders"].setdefault(symbol, {})[str(order_id)] = data
-
-
-def _update_position(symbol, data):
-    if not symbol:
-        return
-    with WSS_LOCK:
-        WSS_STATE["positions"][symbol] = data
-    if symbol not in WSS_CLOSE_PENDING:
-        WSS_CLOSE_PENDING.add(symbol)
-        WSS_CLOSE_QUEUE.put(symbol)
-
-
-def _start_wss_thread(adapter, exchange_name, symbol):
-    def runner():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        if exchange_name == "standx":
-            loop.run_until_complete(_standx_wss_loop(adapter, symbol))
-        elif exchange_name == "grvt":
-            loop.run_until_complete(_grvt_wss_loop(adapter, symbol))
-        loop.run_forever()
-
-    t = threading.Thread(target=runner, daemon=True)
-    t.start()
-
-    def close_worker():
-        while True:
-            sym = WSS_CLOSE_QUEUE.get()
-            try:
-                close_position_if_exists(adapter, sym)
-            finally:
-                WSS_CLOSE_PENDING.discard(sym)
-
-    threading.Thread(target=close_worker, daemon=True).start()
-
-
-def _start_adx_thread(symbol):
-    def adx_worker():
-        indicator_tool = IndicatorTool()
-        adx_symbol = convert_symbol_for_adx(symbol)
-        while True:
-            try:
-                adx = indicator_tool.get_adx(adx_symbol, "5m", period=14)
-                with ADX_LOCK:
-                    ADX_STATE["value"] = adx
-                    ADX_STATE["ts"] = int(time.time() * 1000)
-            except Exception:
-                pass
-            time.sleep(1)
-
-    threading.Thread(target=adx_worker, daemon=True).start()
-
-
-def _get_cached_adx():
-    with ADX_LOCK:
-        return ADX_STATE["value"]
-
-
-async def _standx_wss_loop(adapter, symbol):
-    global WSS_READY
-    await adapter.connect_market_stream()
-    # 订阅价格
-    async def on_price(message):
-        payload = message.get("data", {})
-        spread = payload.get("spread") or []
-        price_info = {
-            "last_price": _to_float(payload.get("last_price")),
-            "mark_price": _to_float(payload.get("mark_price")),
-            "mid_price": _to_float(payload.get("mid_price")),
-            "bid_price": _to_float(spread[0]) if len(spread) > 0 else None,
-            "ask_price": _to_float(spread[1]) if len(spread) > 1 else None,
-            "timestamp": int(time.time() * 1000),
-        }
-        _update_price(symbol, price_info)
-
-    # 私有数据需要认证
-    async def on_order(message):
-        payload = message.get("data", {})
-        order_id = payload.get("id") or payload.get("cl_ord_id")
-        data = {
-            "id": order_id,
-            "side": payload.get("side"),
-            "price": _to_float(payload.get("price")),
-            "status": (payload.get("status") or "").lower(),
-        }
-        _update_order(symbol, order_id, data)
-
-    async def on_position(message):
-        payload = message.get("data", {})
-        qty = _to_float(payload.get("qty"))
-        if qty is None:
-            return
-        side = "long" if qty > 0 else "short"
-        data = {
-            "symbol": payload.get("symbol", symbol),
-            "size": abs(qty),
-            "side": side,
-        }
-        _update_position(payload.get("symbol", symbol), data)
-
-    await adapter.market_stream.subscribe("price", symbol, callback=on_price)
-    if adapter.token:
-        await adapter.market_stream.authenticate(adapter.token)
-        await adapter.market_stream.subscribe("order", callback=on_order)
-        await adapter.market_stream.subscribe("position", callback=on_position)
-
-    WSS_READY = True
-
-
-async def _grvt_wss_loop(adapter, symbol):
-    global WSS_READY
-    await adapter.connect_ws()
-
-    def on_price(message: dict):
-        feed = message.get("feed") or message.get("data", {}).get("feed") or message.get("params", {}).get("feed") or {}
-        price_info = {
-            "last_price": _to_float(feed.get("last_price") or feed.get("price")),
-            "mark_price": _to_float(feed.get("mark_price")),
-            "mid_price": _to_float(feed.get("mid_price")),
-            "bid_price": _to_float(feed.get("best_bid_price") or feed.get("best_bid")),
-            "ask_price": _to_float(feed.get("best_ask_price") or feed.get("best_ask")),
-            "timestamp": int(time.time() * 1000),
-        }
-        _update_price(symbol, price_info)
-
-    def on_order(message: dict):
-        feed = message.get("feed") or message.get("data", {}).get("feed") or message.get("params", {}).get("feed") or {}
-        order_id = feed.get("order_id") or feed.get("client_order_id") or feed.get("id")
-        side = None
-        price = None
-        if isinstance(feed.get("legs"), list) and feed["legs"]:
-            leg = feed["legs"][0]
-            side = "buy" if leg.get("is_buying_asset") else "sell"
-            price = _to_float(leg.get("limit_price"))
-        status = (feed.get("state", {}).get("status") or feed.get("status") or "").lower()
-        data = {"id": order_id, "side": side, "price": price, "status": status}
-        _update_order(symbol, order_id, data)
-
-    def on_position(message: dict):
-        feed = message.get("feed") or message.get("data", {}).get("feed") or message.get("params", {}).get("feed") or {}
-        qty = _to_float(feed.get("size") or feed.get("qty"))
-        if qty is None:
-            return
-        side = "long" if qty > 0 else "short"
-        data = {"symbol": feed.get("instrument", symbol), "size": abs(qty), "side": side}
-        _update_position(feed.get("instrument", symbol), data)
-
-    await adapter.subscribe_ws("ticker.s", {"instrument": symbol}, on_price)
-    await adapter.subscribe_ws(
-        "order", {"instrument": symbol}, on_order, ws_end_point_type=None
-    )
-    await adapter.subscribe_ws(
-        "position", {}, on_position, ws_end_point_type=None
-    )
-    WSS_READY = True
-
-
-def _get_wss_price(symbol):
-    with WSS_LOCK:
-        return WSS_STATE["price"].get(symbol)
-
-
-def _get_wss_open_orders(symbol):
-    with WSS_LOCK:
-        return list(WSS_STATE["orders"].get(symbol, {}).values())
-
-
-def _get_wss_position(symbol):
-    with WSS_LOCK:
-        return WSS_STATE["positions"].get(symbol)
 
 
 def load_config(config_file="config.yaml"):
@@ -399,12 +192,7 @@ def get_pending_orders_arrays(adapter, symbol):
         - short_price_to_ids: 做空价格到订单ID列表的字典映射
     """
     try:
-        open_orders = []
-        wss_orders = _get_wss_open_orders(symbol)
-        if wss_orders:
-            open_orders = wss_orders
-        else:
-            open_orders = adapter.get_open_orders(symbol=symbol)
+        open_orders = adapter.get_open_orders(symbol=symbol)
         
         # 做多订单：side 为 "buy" 或 "long"
         long_prices = []
@@ -413,48 +201,28 @@ def get_pending_orders_arrays(adapter, symbol):
         short_prices = []
         short_price_to_ids = {}  # 价格 -> 订单ID列表
         
-        exchange_name = (EXCHANGE_CONFIG or {}).get("exchange_name", "").lower()
-
         for order in open_orders:
-            status = (order.get("status") if isinstance(order, dict) else getattr(order, "status", None))
-            side = (order.get("side") if isinstance(order, dict) else getattr(order, "side", None))
-            price = (order.get("price") if isinstance(order, dict) else getattr(order, "price", None))
-            if isinstance(order, dict):
-                order_id = order.get("order_id") or order.get("id") or order.get("client_order_id")
-            else:
-                order_id = getattr(order, "order_id", None)
-
-            if isinstance(status, str):
-                status = status.lower()
-            if not status or status not in ["pending", "open", "partially_filled", "new"]:
-                continue
-            if price is None:
-                continue
-            try:
-                price = int(float(price))
-            except (ValueError, TypeError):
-                continue
-
-            if exchange_name == "grvt":
-                order_id = str(order_id) if order_id is not None else None
-            else:
-                try:
-                    order_id = int(order_id) if order_id is not None else None
-                except (ValueError, TypeError):
-                    order_id = None
-
-            if side in ["buy", "long"]:
-                if price not in long_prices:
-                    long_prices.append(price)
-                long_price_to_ids.setdefault(price, [])
-                if order_id is not None:
-                    long_price_to_ids[price].append(order_id)
-            elif side in ["sell", "short"]:
-                if price not in short_prices:
-                    short_prices.append(price)
-                short_price_to_ids.setdefault(price, [])
-                if order_id is not None:
-                    short_price_to_ids[price].append(order_id)
+            # 只处理未成交的订单（状态为 pending, open, partially_filled）
+            if order.status in ["pending", "open", "partially_filled"]:
+                if order.price is not None:
+                    price = int(float(order.price))
+                    try:
+                        order_id = int(order.order_id)
+                    except (ValueError, TypeError):
+                        continue  # 跳过无效的订单ID
+                    
+                    if order.side in ["buy", "long"]:
+                        if price not in long_prices:
+                            long_prices.append(price)
+                        if price not in long_price_to_ids:
+                            long_price_to_ids[price] = []
+                        long_price_to_ids[price].append(order_id)
+                    elif order.side in ["sell", "short"]:
+                        if price not in short_prices:
+                            short_prices.append(price)
+                        if price not in short_price_to_ids:
+                            short_price_to_ids[price] = []
+                        short_price_to_ids[price].append(order_id)
         
         return sorted(long_prices), sorted(short_prices), long_price_to_ids, short_price_to_ids
     except NotImplementedError:
@@ -506,7 +274,7 @@ def cancel_stale_order_ids(adapter, symbol, stale_seconds=5, cancel_probability=
         pass
 
 
-def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_price_to_ids, adapter, symbol):
+def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_price_to_ids, adapter):
     """根据价格列表撤单
     
     Args:
@@ -533,25 +301,17 @@ def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_
     
     # 批量撤单
     try:
-        print(f"准备撤单: 多单价格={cancel_long}, 空单价格={cancel_short}")
-        print(f"撤单订单ID列表: {all_order_ids}")
         if hasattr(adapter, 'cancel_orders_by_ids'):
-            exchange_name = (EXCHANGE_CONFIG or {}).get("exchange_name", "").lower()
-            if exchange_name == "grvt":
-                adapter.cancel_orders_by_ids(order_id_list=all_order_ids, symbol=symbol)
-            else:
-                adapter.cancel_orders_by_ids(order_id_list=all_order_ids)
-            print("批量撤单已发送")
+            adapter.cancel_orders_by_ids(order_id_list=all_order_ids)
         else:
             # 如果适配器没有批量撤单方法，逐个撤单
             for order_id in all_order_ids:
                 try:
                     adapter.cancel_order(order_id=str(order_id))
-                    print(f"撤单成功: {order_id}")
                 except:
-                    print(f"撤单失败: {order_id}")
-    except Exception as e:
-        print(f"批量撤单异常: {e}")
+                    pass
+    except:
+        pass
 
 
 def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
@@ -568,22 +328,9 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
         return
     
     quantity_decimal = Decimal(str(quantity))
-
-    def _should_skip(side: str, price: int) -> bool:
-        key = f"{symbol}:{side}:{price}"
-        now = time.time()
-        with RECENT_ORDER_LOCK:
-            last_ts = RECENT_ORDER_TS.get(key, 0)
-            if now - last_ts < RECENT_ORDER_COOLDOWN:
-                return True
-            RECENT_ORDER_TS[key] = now
-        return False
     
     # 做多订单：buy
     for price in place_long:
-        if _should_skip("buy", price):
-            print(f"[跳过下单][多单] 价格={price}，冷却中")
-            continue
         try:
             order = adapter.place_order(
                 symbol=symbol,
@@ -600,9 +347,6 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
     
     # 做空订单：sell
     for price in place_short:
-        if _should_skip("sell", price):
-            print(f"[跳过下单][空单] 价格={price}，冷却中")
-            continue
         try:
             order = adapter.place_order(
                 symbol=symbol,
@@ -678,18 +422,7 @@ def close_position_if_exists(adapter, symbol):
         symbol: 交易对符号
     """
     try:
-        positions = None
-        wss_position = _get_wss_position(symbol)
-        if wss_position:
-            class SimplePosition:
-                def __init__(self, sym, size, side):
-                    self.symbol = sym
-                    self.size = size
-                    self.side = side
-
-            positions = [SimplePosition(wss_position["symbol"], wss_position["size"], wss_position["side"])]
-        else:
-            positions = adapter.get_positions(symbol)
+        positions = adapter.get_positions(symbol)
         # get_positions 返回列表，取第一个持仓
         position = positions[0] if positions else None
         if position and position.size != Decimal("0"):
@@ -704,32 +437,6 @@ def close_position_if_exists(adapter, symbol):
     except Exception as e:
         # 如果持仓查询失败，静默处理（StandX 可能没有持仓查询接口）
         pass
-
-
-def _start_position_guard_thread(adapter, symbol, interval_seconds=1):
-    """启动持仓监控线程，使用 API 每秒检查并自动平仓"""
-    def guard_worker():
-        while True:
-            try:
-                positions = adapter.get_positions(symbol)
-                position = positions[0] if positions else None
-                if position and getattr(position, "size", None) is not None:
-                    size = Decimal(str(position.size))
-                    if size != Decimal("0"):
-                        print(f"检测到持仓(监控线程): {size} {getattr(position, 'side', '')}")
-                        try:
-                            adapter.cancel_all_orders(symbol=symbol)
-                        except Exception:
-                            pass
-                        try:
-                            adapter.close_position(symbol, order_type="market")
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            time.sleep(interval_seconds)
-
-    threading.Thread(target=guard_worker, daemon=True).start()
 
 
 def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold, adx_max=60):
@@ -772,7 +479,7 @@ def run_strategy_cycle(adapter):
     Args:
         adapter: 适配器实例
     """
-    price_info = _get_wss_price(SYMBOL) or adapter.get_ticker(SYMBOL)
+    price_info = adapter.get_ticker(SYMBOL)
     last_price = price_info.get('last_price') or price_info.get('mid_price') or price_info.get('mark_price')
     print(f"{SYMBOL} 价格: {last_price:.2f}")
 
@@ -780,7 +487,9 @@ def run_strategy_cycle(adapter):
     default_spread = GRID_CONFIG['price_spread']
     
     if RISK_CONFIG.get('enable', False):
-        adx = _get_cached_adx()
+        indicator_tool = IndicatorTool()
+        adx_symbol = convert_symbol_for_adx(SYMBOL)
+        adx = indicator_tool.get_adx(adx_symbol, "5m", period=14)
         adx_threshold = RISK_CONFIG.get('adx_threshold', 25)
         adx_max = RISK_CONFIG.get('adx_max', 60)
         price_spread = calculate_dynamic_price_spread(adx, last_price, default_spread, adx_threshold, adx_max)
@@ -810,7 +519,7 @@ def run_strategy_cycle(adapter):
     
     # 执行撤单
     cancel_orders_by_prices(
-        cancel_long, cancel_short, long_price_to_ids, short_price_to_ids, adapter, SYMBOL
+        cancel_long, cancel_short, long_price_to_ids, short_price_to_ids, adapter
     )
 
     # 随机取消未成交时间过长的订单
@@ -830,6 +539,8 @@ def run_strategy_cycle(adapter):
     place_orders_by_prices(
         place_long, place_short, adapter, SYMBOL, GRID_CONFIG.get('order_quantity', 0.001)
     )
+    # 检查持仓，如果有持仓则市价平仓
+    close_position_if_exists(adapter, SYMBOL)
 
 
 def main():
@@ -864,13 +575,8 @@ def main():
     try:
         adapter = create_adapter(EXCHANGE_CONFIG)
         adapter.connect()
-        exchange_name = EXCHANGE_CONFIG.get("exchange_name", args.exchange).lower()
-        _start_wss_thread(adapter, exchange_name, SYMBOL)
-        _start_position_guard_thread(adapter, SYMBOL, interval_seconds=1)
-        if RISK_CONFIG.get('enable', False):
-            _start_adx_thread(SYMBOL)
         
-        sleep_interval = GRID_CONFIG.get('sleep_interval')
+        sleep_interval = GRID_CONFIG.get('sleep_interval', 60)
         
         print("策略开始运行，按 Ctrl+C 停止...")
         print(f"休眠间隔: {sleep_interval} 秒\n")
