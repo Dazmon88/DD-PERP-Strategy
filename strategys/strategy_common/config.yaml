@@ -6,7 +6,7 @@ exchanges:
     private_key: ""  
     chain: bsc  
     symbol: BTC-USD
-  
+
   grvt:
     exchange_name: grvt
     api_key: ""
@@ -22,7 +22,7 @@ grid:
   grid_count: 3
   price_spread: 50
   order_quantity: 0.002
-  sleep_interval: 0.2
+  sleep_interval: 1
 
 risk:
   enable: true
