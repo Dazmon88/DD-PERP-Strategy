@@ -7,6 +7,7 @@
 # ruff: noqa: E501
 
 import asyncio
+import contextlib
 import json
 import logging
 import traceback
@@ -71,6 +72,8 @@ class GrvtCcxtWS(GrvtCcxtPro):
         self.api_url: dict[GrvtWSEndpointType, str] = {}
         self._last_message: dict[str, dict] = {}
         self._request_id = 0
+        self.ping_interval_sec = parameters.get("ping_interval_sec", 25)
+        self._ping_tasks: dict[GrvtWSEndpointType, asyncio.Task | None] = {}
         self.endpoint_types = [
             GrvtWSEndpointType.MARKET_DATA,
             GrvtWSEndpointType.TRADE_DATA,
@@ -85,6 +88,7 @@ class GrvtCcxtWS(GrvtCcxtPro):
             self.callbacks[grvt_endpoint_type] = {}
             self.subscribed_streams[grvt_endpoint_type] = {}
             self.ws[grvt_endpoint_type] = None
+            self._ping_tasks[grvt_endpoint_type] = None
             self._loop.create_task(self._read_messages(grvt_endpoint_type))
         self.logger.info(f"{self._clsname} initialized {self.api_url=}")
         self.logger.info(f"{self._clsname} initialized {self.ws=}")
@@ -207,6 +211,7 @@ class GrvtCcxtWS(GrvtCcxtPro):
                     self.logger.info(
                         f"{FN} Connected to {self.api_url[grvt_endpoint_type]} {extra_headers=}"
                     )
+                    self._start_ping_task(grvt_endpoint_type)
                 else:
                     self.logger.info(f"{FN} Waiting for cookie.")
             elif grvt_endpoint_type in [
@@ -221,6 +226,7 @@ class GrvtCcxtWS(GrvtCcxtPro):
                     proxy=None,
                 )
                 self.logger.info(f"{FN} Connected to {self.api_url[grvt_endpoint_type]} {extra_headers=}")
+                self._start_ping_task(grvt_endpoint_type)
         except (
             websockets.exceptions.ConnectionClosedOK,
             websockets.exceptions.ConnectionClosed,
@@ -235,6 +241,12 @@ class GrvtCcxtWS(GrvtCcxtPro):
 
     async def _close_connection(self, grvt_endpoint_type: GrvtWSEndpointType):
         try:
+            ping_task = self._ping_tasks.get(grvt_endpoint_type)
+            if ping_task:
+                ping_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ping_task
+                self._ping_tasks[grvt_endpoint_type] = None
             if self.ws[grvt_endpoint_type]:
                 self.logger.info(f"{self._clsname} Closing connection...")
                 await self.ws[grvt_endpoint_type].close()
@@ -257,6 +269,26 @@ class GrvtCcxtWS(GrvtCcxtPro):
                 await self._resubscribe(grvt_endpoint_type)
         except Exception:
             self.logger.exception(f"{FN} failed {traceback.format_exc()}")
+
+    async def _ping_loop(self, grvt_endpoint_type: GrvtWSEndpointType):
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval_sec)
+                ws = self.ws.get(grvt_endpoint_type)
+                if ws:
+                    await ws.ping()
+        except asyncio.CancelledError:
+            return
+
+    def _start_ping_task(self, grvt_endpoint_type: GrvtWSEndpointType):
+        if not self.ping_interval_sec or self.ping_interval_sec <= 0:
+            return
+        existing = self._ping_tasks.get(grvt_endpoint_type)
+        if existing and not existing.done():
+            return
+        self._ping_tasks[grvt_endpoint_type] = self._loop.create_task(
+            self._ping_loop(grvt_endpoint_type)
+        )
 
     async def _resubscribe(self, grvt_endpoint_type: GrvtWSEndpointType):
         if self.is_connection_open(grvt_endpoint_type):

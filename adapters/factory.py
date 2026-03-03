@@ -7,11 +7,15 @@ from typing import Dict, Any, Type
 from adapters.base_adapter import BasePerpAdapter
 from adapters.standx_adapter import StandXAdapter
 from adapters.grvt_adapter import GrvtAdapter
+from adapters.lighter_adapter import LighterAdapter
+from adapters.hype_adapter import HypeAdapter
 
 # 注册所有可用的适配器
 _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
     "standx": StandXAdapter,
     "grvt": GrvtAdapter,
+    "lighter": LighterAdapter,
+    "hype": HypeAdapter,
     # 未来可以添加更多交易所适配器
     # "nado": NadoAdapter,
 }

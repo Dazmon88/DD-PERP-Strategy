@@ -1,4 +1,6 @@
 import json
+import asyncio
+import contextlib
 from websockets.sync.client import connect
 from websockets.client import connect as connect_async
 from lighter.configuration import Configuration
@@ -10,8 +12,14 @@ class WsClient:
         path="/stream",
         order_book_ids=[],
         account_ids=[],
+        account_orders_ids=[],
+        user_stats_ids=[],
         on_order_book_update=print,
         on_account_update=print,
+        on_account_orders_update=print,
+        on_user_stats_update=print,
+        auth_token=None,
+        ping_interval_sec: int = 25,
     ):
         if host is None:
             host = Configuration.get_default().host.replace("https://", "")
@@ -21,16 +29,29 @@ class WsClient:
         self.subscriptions = {
             "order_books": order_book_ids,
             "accounts": account_ids,
+            "account_orders": account_orders_ids,
+            "user_stats": user_stats_ids,
         }
 
-        if len(order_book_ids) == 0 and len(account_ids) == 0:
+        if (
+            len(order_book_ids) == 0
+            and len(account_ids) == 0
+            and len(account_orders_ids) == 0
+            and len(user_stats_ids) == 0
+        ):
             raise Exception("No subscriptions provided.")
 
         self.order_book_states = {}
         self.account_states = {}
+        self.account_orders_states = {}
+        self.user_stats_states = {}
 
         self.on_order_book_update = on_order_book_update
         self.on_account_update = on_account_update
+        self.on_account_orders_update = on_account_orders_update
+        self.on_user_stats_update = on_user_stats_update
+        self.auth_token = auth_token
+        self.ping_interval_sec = ping_interval_sec
 
         self.ws = None
 
@@ -50,9 +71,20 @@ class WsClient:
             self.handle_subscribed_account(message)
         elif message_type == "update/account_all":
             self.handle_update_account(message)
+        elif message_type == "subscribed/account_all_orders":
+            self.handle_subscribed_account_orders(message)
+        elif message_type == "update/account_all_orders":
+            self.handle_update_account_orders(message)
+        elif message_type == "subscribed/user_stats":
+            self.handle_subscribed_user_stats(message)
+        elif message_type == "update/user_stats":
+            self.handle_update_user_stats(message)
         elif message_type == "ping":
             # Respond to ping with pong
             ws.send(json.dumps({"type": "pong"}))
+        elif message_type == "pong":
+            # Ignore pong
+            return
         else:
             self.handle_unhandled_message(message)
 
@@ -79,6 +111,24 @@ class WsClient:
                     {"type": "subscribe", "channel": f"account_all/{account_id}"}
                 )
             )
+        for account_id in self.subscriptions["account_orders"]:
+            if not self.auth_token:
+                raise Exception("No auth token provided for account_all_orders.")
+            ws.send(
+                json.dumps(
+                    {
+                        "type": "subscribe",
+                        "channel": f"account_all_orders/{account_id}",
+                        "auth": self.auth_token,
+                    }
+                )
+            )
+        for account_id in self.subscriptions["user_stats"]:
+            ws.send(
+                json.dumps(
+                    {"type": "subscribe", "channel": f"user_stats/{account_id}"}
+                )
+            )
 
     async def handle_connected_async(self, ws):
         for market_id in self.subscriptions["order_books"]:
@@ -89,6 +139,24 @@ class WsClient:
             await ws.send(
                 json.dumps(
                     {"type": "subscribe", "channel": f"account_all/{account_id}"}
+                )
+            )
+        for account_id in self.subscriptions["account_orders"]:
+            if not self.auth_token:
+                raise Exception("No auth token provided for account_all_orders.")
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "subscribe",
+                        "channel": f"account_all_orders/{account_id}",
+                        "auth": self.auth_token,
+                    }
+                )
+            )
+        for account_id in self.subscriptions["user_stats"]:
+            await ws.send(
+                json.dumps(
+                    {"type": "subscribe", "channel": f"user_stats/{account_id}"}
                 )
             )
 
@@ -141,6 +209,30 @@ class WsClient:
         if self.on_account_update:
             self.on_account_update(account_id, self.account_states[account_id])
 
+    def handle_subscribed_account_orders(self, message):
+        account_id = message["channel"].split(":")[1]
+        self.account_orders_states[account_id] = message
+        if self.on_account_orders_update:
+            self.on_account_orders_update(account_id, self.account_orders_states[account_id])
+
+    def handle_update_account_orders(self, message):
+        account_id = message["channel"].split(":")[1]
+        self.account_orders_states[account_id] = message
+        if self.on_account_orders_update:
+            self.on_account_orders_update(account_id, self.account_orders_states[account_id])
+
+    def handle_subscribed_user_stats(self, message):
+        account_id = message["channel"].split(":")[1]
+        self.user_stats_states[account_id] = message
+        if self.on_user_stats_update:
+            self.on_user_stats_update(account_id, self.user_stats_states[account_id])
+
+    def handle_update_user_stats(self, message):
+        account_id = message["channel"].split(":")[1]
+        self.user_stats_states[account_id] = message
+        if self.on_user_stats_update:
+            self.on_user_stats_update(account_id, self.user_stats_states[account_id])
+
     def handle_unhandled_message(self, message):
         raise Exception(f"Unhandled message: {message}")
 
@@ -160,6 +252,20 @@ class WsClient:
     async def run_async(self):
         ws = await connect_async(self.base_url)
         self.ws = ws
+        ping_task = None
 
-        async for message in ws:
-            await self.on_message_async(ws, message)
+        async def _ping_loop():
+            while True:
+                await asyncio.sleep(self.ping_interval_sec)
+                await ws.send(json.dumps({"type": "ping"}))
+
+        try:
+            if self.ping_interval_sec and self.ping_interval_sec > 0:
+                ping_task = asyncio.create_task(_ping_loop())
+            async for message in ws:
+                await self.on_message_async(ws, message)
+        finally:
+            if ping_task:
+                ping_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ping_task

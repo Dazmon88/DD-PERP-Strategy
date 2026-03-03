@@ -40,7 +40,7 @@ class StandXPerpHTTP:
             ValueError: If request fails
         """
         url = f"{self.base_url}/api/health"
-        response = requests.get(url)
+        response = requests.get(url, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -59,7 +59,7 @@ class StandXPerpHTTP:
         """
         url = f"{self.geo_url}/v1/region"
         # 增加超时时间，防止网络问题导致长时间阻塞
-        response = requests.get(url, timeout=1.0)
+        response = requests.get(url, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -116,7 +116,7 @@ class StandXPerpHTTP:
             "Authorization": f"Bearer {token}"
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -202,7 +202,7 @@ class StandXPerpHTTP:
         sign_headers = auth.sign_request(payload_str, request_id, timestamp)
         headers.update(sign_headers)
         
-        response = requests.post(url, headers=headers, data=payload_str)
+        response = requests.post(url, headers=headers, data=payload_str, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -246,7 +246,7 @@ class StandXPerpHTTP:
         if symbol:
             params["symbol"] = symbol
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -282,7 +282,7 @@ class StandXPerpHTTP:
         url = f"{self.base_url}/api/query_symbol_price"
         params = {"symbol": symbol}
         
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -323,7 +323,7 @@ class StandXPerpHTTP:
         if limit:
             params["limit"] = limit
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -379,7 +379,7 @@ class StandXPerpHTTP:
         sign_headers = auth.sign_request(payload_str, request_id, timestamp)
         headers.update(sign_headers)
         
-        response = requests.post(url, headers=headers, data=payload_str)
+        response = requests.post(url, headers=headers, data=payload_str, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")
@@ -423,7 +423,7 @@ class StandXPerpHTTP:
         if symbol:
             params["symbol"] = symbol
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=2.0)
         
         if not response.ok:
             raise ValueError(f"HTTP {response.status_code}: {response.text}")

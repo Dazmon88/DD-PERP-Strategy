@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import uuid
 import time
@@ -16,6 +17,8 @@ class StandXMarketStream:
         self.callbacks: Dict[str, Callable] = {}
         self.connected = False
         self._connect_time: Optional[float] = None  # 记录连接时间，用于 24 小时重连
+        self.ping_interval_sec = 25
+        self._ping_task: Optional[asyncio.Task] = None
     
     async def connect(self):
         """建立 WebSocket 连接"""
@@ -35,6 +38,8 @@ class StandXMarketStream:
             self._connect_time = time.time()  # 记录连接时间
             # 启动消息接收任务
             asyncio.create_task(self._receive_messages())
+            # 主动心跳
+            self._ping_task = asyncio.create_task(self._ping_loop())
         except Exception as e:
             self.connected = False
             raise Exception(f"WebSocket 连接失败: {e}")
@@ -51,6 +56,15 @@ class StandXMarketStream:
                     print(f"处理消息错误: {e}")
         except ConnectionClosed:
             self.connected = False
+
+    async def _ping_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval_sec)
+                if self.ws:
+                    await self.ws.ping()
+        except asyncio.CancelledError:
+            return
         except Exception as e:
             print(f"接收消息错误: {e}")
             self.connected = False
@@ -108,6 +122,11 @@ class StandXMarketStream:
             await self.ws.close()
             self.connected = False
             self._connect_time = None
+        if self._ping_task:
+            self._ping_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ping_task
+            self._ping_task = None
 
 
 class StandXOrderStream:
@@ -121,6 +140,8 @@ class StandXOrderStream:
         self.connected = False
         self.auth: Optional[Any] = None  # StandXAuth 实例，用于签名
         self._connect_time: Optional[float] = None  # 记录连接时间，用于 24 小时重连
+        self.ping_interval_sec = 25
+        self._ping_task: Optional[asyncio.Task] = None
     
     async def connect(self):
         """建立 WebSocket 连接"""
@@ -140,6 +161,8 @@ class StandXOrderStream:
             self._connect_time = time.time()  # 记录连接时间
             # 启动消息接收任务
             asyncio.create_task(self._receive_messages())
+            # 主动心跳
+            self._ping_task = asyncio.create_task(self._ping_loop())
         except Exception as e:
             self.connected = False
             raise Exception(f"WebSocket 连接失败: {e}")
@@ -156,6 +179,15 @@ class StandXOrderStream:
                     print(f"处理消息错误: {e}")
         except ConnectionClosed:
             self.connected = False
+
+    async def _ping_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.ping_interval_sec)
+                if self.ws:
+                    await self.ws.ping()
+        except asyncio.CancelledError:
+            return
         except Exception as e:
             print(f"接收消息错误: {e}")
             self.connected = False
@@ -301,3 +333,8 @@ class StandXOrderStream:
             await self.ws.close()
             self.connected = False
             self._connect_time = None
+        if self._ping_task:
+            self._ping_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ping_task
+            self._ping_task = None

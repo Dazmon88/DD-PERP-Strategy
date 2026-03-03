@@ -189,7 +189,7 @@ class StandXAdapter(BasePerpAdapter):
         except Exception as e:
             raise Exception(f"StandX 认证失败: {e}")
 
-    async def connect_market_stream(self) -> StandXMarketStream:
+    async def connect_market_stream(self) -> StandXMarketStream: 
         """连接市场 WebSocket（公共频道无需认证）"""
         if not self.market_stream:
             self.market_stream = StandXMarketStream()
@@ -199,6 +199,7 @@ class StandXAdapter(BasePerpAdapter):
 
     async def subscribe_market(self, channel: str, symbol: str, callback=None):
         """订阅市场 WebSocket 频道"""
+        print(f"[subscribe_market] {channel} {symbol}")
         stream = await self.connect_market_stream()
         await stream.subscribe(channel, symbol, callback=callback)
     

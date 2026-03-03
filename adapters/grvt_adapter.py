@@ -106,17 +106,41 @@ class GrvtAdapter(BasePerpAdapter):
     
     def get_balance(self) -> Balance:
         """查询账户余额"""
-        raise NotImplementedError("GRVT 余额查询功能待实现")
+        try:
+            balances = self.grvt_client.fetch_balance(type="sub-account")
+            total_map = balances.get("total", {}) if isinstance(balances, dict) else {}
+            free_map = balances.get("free", {}) if isinstance(balances, dict) else {}
+
+            asset = None
+            for candidate in ["USDT", "DUSD", "USDC"]:
+                if candidate in total_map:
+                    asset = candidate
+                    break
+            if asset is None and total_map:
+                asset = next(iter(total_map.keys()))
+
+            if asset is None:
+                raise Exception("GRVT 余额数据为空")
+
+            total_val = Decimal(str(total_map.get(asset, "0")))
+            free_val = Decimal(str(free_map.get(asset, total_val)))
+
+            return Balance(
+                total_balance=total_val,
+                available_balance=free_val,
+                equity=total_val,
+                unrealized_pnl=Decimal("0"),
+                margin_used=None,
+                margin_available=None,
+            )
+        except Exception as e:
+            raise Exception(f"GRVT 余额查询失败: {e}")
     
     def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
         """查询持仓信息"""
         try:
             symbols = [symbol] if symbol else []
             positions_data = self.grvt_client.fetch_positions(symbols=symbols)
-            
-            print(f"[GRVT] 查询持仓: symbol={symbol}, 返回数据条数={len(positions_data)}")
-            if positions_data:
-                print(f"[GRVT] 持仓数据示例: {positions_data[0]}")
             
             positions = []
             for idx, pos_data in enumerate(positions_data):
@@ -135,7 +159,6 @@ class GrvtAdapter(BasePerpAdapter):
                 
                 # 根据数量正负判断方向
                 side = "long" if qty > 0 else "short"
-                print(f"[GRVT] 持仓方向: {side}, 数量: {abs(qty)}")
                 
                 # 处理 leverage 字段（可能是字符串 "50.0"）
                 leverage_value = None
@@ -156,9 +179,7 @@ class GrvtAdapter(BasePerpAdapter):
                     margin_mode=pos_data.get("margin_mode"),
                 )
                 positions.append(position)
-                print(f"[GRVT] 成功创建 Position 对象: {position.symbol}, {position.size}, {position.side}")
             
-            print(f"[GRVT] 最终返回持仓数量: {len(positions)}")
             return positions
         except Exception as e:
             print(f"[GRVT] 查询持仓异常: {e}")
@@ -174,9 +195,11 @@ class GrvtAdapter(BasePerpAdapter):
         
         leg = legs[0]
         metadata = grvt_order.get("metadata", {})
+        order_id = grvt_order.get("order_id") or metadata.get("client_order_id", "")
+        client_order_id = metadata.get("client_order_id")
         
         return Order(
-            order_id=str(metadata.get("client_order_id", "")),
+            order_id=str(order_id),
             symbol=leg.get("instrument", symbol),
             side="buy" if leg.get("is_buying_asset") else "sell",
             order_type="market" if grvt_order.get("is_market") else "limit",
@@ -184,6 +207,7 @@ class GrvtAdapter(BasePerpAdapter):
             price=Decimal(str(leg.get("limit_price", 0))) if leg.get("limit_price") else None,
             status="pending",  # GRVT 订单状态需要进一步查询
             created_at=int(time.time() * 1000),
+            client_order_id=str(client_order_id) if client_order_id is not None else None,
         )
     
     def place_order(
@@ -213,6 +237,7 @@ class GrvtAdapter(BasePerpAdapter):
         if order_type.lower() == "limit":
             if price is None:
                 raise ValueError("限价单必须提供价格")
+            params["post_only"] = True
             result = self.grvt_client.create_limit_order(symbol, grvt_side, str(quantity), str(price), params)
         elif order_type.lower() == "market":
             result = self.grvt_client.create_order(symbol, "market", grvt_side, str(quantity), None, params)

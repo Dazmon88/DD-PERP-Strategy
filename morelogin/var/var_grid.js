@@ -2,7 +2,7 @@
 class BTCAutoTrading {
     // ========== 基础交易配置 ==========
     static TRADING_CONFIG = {
-        START_PRICE: 80000,
+        START_PRICE: 50000,
         END_PRICE: 100000,
         MIN_ORDER_INTERVAL: 5000,     // 下单最小间隔10秒（防风控）
         ORDER_COOLDOWN: 5000,          // 单个订单成功后冷却3秒
@@ -20,7 +20,7 @@ class BTCAutoTrading {
 
     // ========== 网格策略核心配置（全部集中在这里调参！）==========
     static GRID_STRATEGY_CONFIG = {
-        TOTAL_ORDERS: 8,               // 固定50单滑动窗口
+        TOTAL_ORDERS: 4,               // 固定50单滑动窗口
 
         // 窗口宽度（核心参数！建议 0.08~0.18）
         WINDOW_PERCENT: 0.12,           // 12% → 7万时 ≈ ±4200美元范围
@@ -36,7 +36,7 @@ class BTCAutoTrading {
         // 安全保护
         MAX_DRIFT_BUFFER: 2000,         // 超出窗口太多自动停止扩展
         MIN_VALID_PRICE: 10000,         // 防止崩盘挂到地板价
-        MAX_MULTIPLIER: 20,         // 动态开仓大小的比例最大开仓倍数
+        MAX_MULTIPLIER: 2,         // 动态开仓大小的比例最大开仓倍数
 
         // --- 策略配置 ---
         RSI_MIN: 30,                   // RSI 下限
@@ -983,68 +983,78 @@ class BTCOrderManager {
         return (askPrice + bidPrice) / 2;
     }
 
-    async cancelByPrice(price) {
-        console.log(`准备取消 $${price}`);
-        
-        const prices = Array.isArray(price) ? price : [price];
-        
-        for (let target of prices) {
-            const targetNum = Number(String(target).replace(/[^0-9.]/g, ''));
-            if (!targetNum) continue;
+    async  cancelByPrice(price) {
+        // 将输入统一转为带千分位和两位小数的字符串格式，匹配页面显示 (例如 65880 -> "65,880.00")
+        const formatPrice = (p) => {
+            const num = Number(String(p).replace(/[^0-9.]/g, ''));
+            return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        };
 
-            const allPriceSpans = document.querySelectorAll('div.justify-self-end > span.text-current');
+        const targetPrices = Array.isArray(price) ? price : [price];
+        
+        for (let target of targetPrices) {
+            const targetStr = formatPrice(target);
+            console.log(`🔍 正在搜寻价格: $${targetStr}`);
 
+            // 1. 获取所有行
+            const rows = document.querySelectorAll('[data-testid="orders-table-row"]');
             let found = false;
-            for (const span of allPriceSpans) {
-                const text = span.textContent.trim();
-                const priceInPage = Number(text.replace(/[$,]/g, ''));
-                
-                if (priceInPage === targetNum) {
-                    const row = span.closest('[data-testid="orders-table-row"]');
-                    const cancelBtn = row?.querySelector('button[title="取消订单"]');
+
+            for (const row of rows) {
+                // 2. 在行内直接查找包含目标价格字符串的元素
+                // 这样避开了复杂的层级选择器，只要行内有这个价格字符串就行
+                if (row.textContent.includes(targetStr)) {
                     
+                    // 3. 锁定取消按钮：利用刚才测试成功的 SVG 路径匹配
+                    const cancelBtn = Array.from(row.querySelectorAll('button')).find(btn => 
+                        btn.innerHTML.includes('M6.4 19L5 17.6')
+                    );
+
                     if (cancelBtn) {
+                        console.log(`🎯 找到订单 $${targetStr}，触发取消...`);
                         cancelBtn.scrollIntoView({ block: 'center' });
                         cancelBtn.click();
 
+                        // 4. 等待确认弹窗
                         await new Promise(resolve => {
                             let attempts = 0;
                             const timer = setInterval(() => {
                                 attempts++;
                                 
-                                const confirmBtn = 
-                                    [...document.querySelectorAll('button')].find(btn => 
-                                        btn.textContent.trim() === '确认' && 
-                                        btn.classList.contains('bg-red')
-                                    ) ;
+                                // 查找红色的确认按钮
+                                const confirmBtn = Array.from(document.querySelectorAll('button')).find(btn => 
+                                    btn.textContent.includes('确认') && 
+                                    (btn.classList.contains('bg-red') || btn.className.includes('bg-red'))
+                                );
 
                                 if (confirmBtn && confirmBtn.offsetParent !== null) {
                                     clearInterval(timer);
                                     setTimeout(() => {
                                         confirmBtn.click();
-                                        console.log(`已确认取消 $${targetNum.toLocaleString()}`);
+                                        console.log(`✅ $${targetStr} 已点击确认`);
                                         resolve();
-                                    }, 1000);
+                                    }, 500); // 给弹窗一点动画时间
                                 }
 
-                                if (attempts > 50) {
+                                if (attempts > 20) {
                                     clearInterval(timer);
-                                    console.warn('确认按钮超时，可能弹窗被拦截或已自动关闭');
+                                    console.warn('⏳ 未检测到确认弹窗');
                                     resolve();
                                 }
-                            }, 1000);
+                            }, 400);
                         });
 
                         found = true;
-                        break;
+                        // 如果你想一行行删，这里可以 break；
+                        // 如果同一价格有多单，建议删掉 break 让它继续在 rows 里找
+                        break; 
                     }
                 }
             }
 
-            if (!found) {
-                console.warn(`未找到 $${targetNum.toLocaleString()} 的挂单（或已被取消）`);
-            }
-
+            if (!found) console.warn(`❌ 列表中未找到价格为 $${targetStr} 的订单`);
+            
+            // 5. 每处理完一个价格，强制等待一小会儿，防止 UI 渲染不过来
             await new Promise(r => setTimeout(r, 1000));
         }
     }

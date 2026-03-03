@@ -1,0 +1,154 @@
+# Poetry pyproject.toml: https://python-poetry.org/docs/pyproject/
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "hyperliquid-python-sdk"
+version = "0.22.0"
+description = "SDK for Hyperliquid API trading with Python."
+readme = "README.md"
+authors = ["Hyperliquid <hello@hyperliquid.xyz>"]
+license = "MIT"
+repository = "https://github.com/hyperliquid-dex/hyperliquid-python-sdk"
+homepage = "https://github.com/hyperliquid-dex/hyperliquid-python-sdk"
+packages = [
+  { include = "hyperliquid" },
+]
+
+# Keywords description https://python-poetry.org/docs/pyproject/#keywords
+keywords = []  #! Update me
+
+# Pypi classifiers: https://pypi.org/classifiers/
+classifiers = [  #! Update me
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+[tool.poetry.scripts]
+# Entry points for the package https://python-poetry.org/docs/pyproject/#scripts
+"hyperliquid-python-sdk" = "hyperliquid.__main__:app"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+eth-utils = ">=2.1.0,<6.0.0"
+eth-account = ">=0.10.0,<0.14.0"
+websocket-client = "^1.5.1"
+requests = "^2.31.0"
+msgpack = "^1.0.5"
+
+[tool.poetry.group.dev.dependencies]
+python = "^3.10"
+pytest = "^8.3.4"
+pytest-recording = "^0.13.2"
+mypy = "^1.14.1"
+mypy-extensions = "^1.0.0"
+pre-commit = "^4.1.0"
+safety = "^3.2.14"
+coverage = "^7.6.10"
+pytest-cov = "^6.0.0"
+vcrpy = { version = "^7.0.0", python = "3.10.10" }
+types-requests = "^2.31.0"
+lz4 = "^4.3"
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+# https://github.com/timothycrosley/isort/
+py_version = 310
+line_length = 120
+
+known_typing = ["typing", "types", "typing_extensions", "mypy", "mypy_extensions"]
+sections = ["FUTURE", "TYPING", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+include_trailing_comma = true
+profile = "black"
+multi_line_output = 3
+indent = 4
+color_output = true
+
+[tool.mypy]
+# https://mypy.readthedocs.io/en/latest/config_file.html#using-a-pyproject-toml-file
+python_version = "3.10"
+pretty = true
+show_traceback = true
+color_output = true
+
+allow_redefinition = false
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true
+implicit_reexport = true
+no_implicit_optional = true
+show_column_numbers = true
+show_error_codes = true
+show_error_context = true
+strict_equality = true
+strict_optional = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pylint.'MESSAGES CONTROL']
+max-line-length = 120
+max-module-lines=2000
+disable = """
+    consider-using-in,
+    fixme,
+    import-error,
+    inconsistent-return-statements,
+    invalid-name,
+    logging-fstring-interpolation,
+    line-too-long,
+    missing-class-docstring,
+    missing-function-docstring,
+    missing-module-docstring,
+    no-else-raise,
+    no-else-return,
+    raise-missing-from,
+    redefined-builtin,
+    self-assigning-variable,
+    simplifiable-if-expression,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-branches,
+    too-many-positional-arguments,
+    too-many-public-methods,
+    too-many-return-statements
+"""
+
+[tool.pytest.ini_options]
+# https://docs.pytest.org/en/6.2.x/customize.html#pyproject-toml
+# Directories that are not visited by pytest collector:
+norecursedirs =["hooks", "*.egg", ".eggs", "dist", "build", "docs", ".tox", ".git", "__pycache__"]
+doctest_optionflags = ["NUMBER", "NORMALIZE_WHITESPACE", "IGNORE_EXCEPTION_DETAIL"]
+
+# Extra options:
+addopts = [
+  "--strict-markers",
+  "--tb=short",
+  "--doctest-modules",
+  "--doctest-continue-on-failure",
+  "--record-mode=once",
+  "--cov-report=html",
+  "--cov=hyperliquid"
+]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

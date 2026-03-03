@@ -114,7 +114,8 @@ class StandXAuth:
         response = requests.post(
             url,
             json=data,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            timeout=2.0
         )
         
         if not response.ok:
@@ -159,7 +160,8 @@ class StandXAuth:
         response = requests.post(
             url,
             json=data,
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            timeout=2.0
         )
         
         if not response.ok:
