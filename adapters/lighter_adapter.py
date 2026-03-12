@@ -7,7 +7,8 @@ import sys
 import os
 import time
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future
 from typing import Dict, Any, Optional, List, Tuple
 from decimal import Decimal, ROUND_DOWN
 
@@ -63,18 +64,28 @@ class LighterAdapter(BasePerpAdapter):
             config.get("api_key_index"),
             config.get("api_private_key"),
         )
+        # lighter SDK 基于 aiohttp，初始化时需要活跃 event loop
+        self._loop = asyncio.new_event_loop()
+        self._loop_ready = threading.Event()
+        self._loop_thread = threading.Thread(target=self._loop_runner, daemon=True)
+        self._loop_thread.start()
+        self._loop_ready.wait(timeout=5)
 
-        self.api_client = lighter.ApiClient(configuration=lighter.Configuration(host=self.base_url))
-        self.account_api = lighter.AccountApi(self.api_client)
-        self.order_api = lighter.OrderApi(self.api_client)
+        self.api_client = None
+        self.account_api = None
+        self.order_api = None
+        self._init_api_clients()
 
         self.signer_client: Optional[lighter.SignerClient] = None
         if api_private_keys:
-            self.signer_client = lighter.SignerClient(
-                url=self.base_url,
-                account_index=int(self.account_index),
-                api_private_keys=api_private_keys,
-            )
+            def _build_signer():
+                self.signer_client = lighter.SignerClient(
+                    url=self.base_url,
+                    account_index=int(self.account_index),
+                    api_private_keys=api_private_keys,
+                )
+
+            self._call_in_loop(_build_signer)
 
         self.api_key_index = self._resolve_api_key_index(api_private_keys, config.get("api_key_index"))
         self._auth_token: Optional[str] = None
@@ -84,6 +95,31 @@ class LighterAdapter(BasePerpAdapter):
         self._market_by_id: Dict[int, Dict[str, Any]] = {}
         self.ws_host = self.base_url.replace("https://", "").replace("http://", "")
         self.ws_client: Optional[WsClient] = None
+
+    def _loop_runner(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop_ready.set()
+        self._loop.run_forever()
+
+    def _call_in_loop(self, func):
+        future: Future = Future()
+
+        def _wrapped():
+            try:
+                future.set_result(func())
+            except Exception as e:
+                future.set_exception(e)
+
+        self._loop.call_soon_threadsafe(_wrapped)
+        return future.result()
+
+    def _init_api_clients(self):
+        def _build():
+            self.api_client = lighter.ApiClient(configuration=lighter.Configuration(host=self.base_url))
+            self.account_api = lighter.AccountApi(self.api_client)
+            self.order_api = lighter.OrderApi(self.api_client)
+
+        self._call_in_loop(_build)
 
     def init_ws_client(
         self,
@@ -151,14 +187,10 @@ class LighterAdapter(BasePerpAdapter):
         return None
 
     def _run_async(self, coro):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(asyncio.run, coro)
+        if self._loop and self._loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             return future.result()
+        return asyncio.run(coro)
 
     def _resolve_auth_api_key_index(self) -> int:
         if self.api_key_index is not None:
@@ -189,6 +221,47 @@ class LighterAdapter(BasePerpAdapter):
 
     def _normalize_symbol(self, symbol: str) -> str:
         return symbol.replace("-", "").replace("_", "").upper()
+
+    def _extract_base_symbol(self, symbol: str) -> str:
+        symbol = str(symbol).upper().replace("/", "-").replace("_", "-")
+        return symbol.split("-", 1)[0]
+
+    def _resolve_market_key(self, symbol: str) -> Optional[str]:
+        """解析 symbol 到 market cache key：先精确，再按 base token 兜底。"""
+        norm_symbol = self._normalize_symbol(symbol)
+        if norm_symbol in self._market_cache:
+            return norm_symbol
+
+        base = self._extract_base_symbol(symbol)
+        candidates = [key for key in self._market_cache.keys() if key == base or key.startswith(base)]
+        if not candidates:
+            return None
+
+        # 优先级：完全等于 base > 含 USD/USDC/PERP 后缀 > 唯一候选
+        for key in candidates:
+            if key == base:
+                return key
+        for suffix in ("USD", "USDC", "PERP"):
+            for key in candidates:
+                if key.endswith(suffix):
+                    return key
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def _symbol_matches(self, requested_symbol: Optional[str], actual_symbol: Optional[str]) -> bool:
+        """判断请求 symbol 与交易所返回 symbol 是否匹配（含 base token 兜底）。"""
+        if not requested_symbol:
+            return True
+        if not actual_symbol:
+            return False
+
+        req_norm = self._normalize_symbol(requested_symbol)
+        act_norm = self._normalize_symbol(actual_symbol)
+        if req_norm == act_norm:
+            return True
+
+        return self._extract_base_symbol(requested_symbol) == self._extract_base_symbol(actual_symbol)
 
     def _refresh_markets(self):
         details = self._run_async(self.order_api.order_books(filter=self.market_type))
@@ -223,7 +296,11 @@ class LighterAdapter(BasePerpAdapter):
             self._market_by_id[market.market_id] = meta
 
     def _load_market_details(self, market_id: int):
-        details = self._run_async(self.order_api.order_book_details(market_id=market_id, filter=self.market_type))
+        try:
+            details = self._run_async(self.order_api.order_book_details(market_id=market_id, filter=self.market_type))
+        except Exception:
+            # 某些 SDK 版本在部分市场会返回不完整字段，触发 pydantic 校验错误
+            return
         if not details:
             return
 
@@ -246,7 +323,11 @@ class LighterAdapter(BasePerpAdapter):
             break
 
     async def _load_market_details_async(self, market_id: int):
-        details = await self.order_api.order_book_details(market_id=market_id, filter=self.market_type)
+        try:
+            details = await self.order_api.order_book_details(market_id=market_id, filter=self.market_type)
+        except Exception:
+            # 某些 SDK 版本在部分市场会返回不完整字段，触发 pydantic 校验错误
+            return
         if not details:
             return
 
@@ -269,38 +350,44 @@ class LighterAdapter(BasePerpAdapter):
             break
 
     def _get_market_meta(self, symbol: str) -> Dict[str, Any]:
-        norm_symbol = self._normalize_symbol(symbol)
-        if norm_symbol not in self._market_cache:
+        resolved_key = self._resolve_market_key(symbol)
+        if resolved_key is None:
             self._refresh_markets()
+            resolved_key = self._resolve_market_key(symbol)
 
-        if norm_symbol not in self._market_cache:
-            raise ValueError(f"未找到交易对: {symbol}")
+        if resolved_key is None:
+            available = sorted([meta.get("symbol", key) for key, meta in self._market_cache.items()])
+            preview = ", ".join(available[:20])
+            raise ValueError(f"未找到交易对: {symbol}. 可用市场(前20): {preview}")
 
-        meta = self._market_cache[norm_symbol]
+        meta = self._market_cache[resolved_key]
         if "price_decimals" not in meta or "size_decimals" not in meta:
             try:
                 self._load_market_details(meta["market_id"])
             except Exception:
                 # order_book_details may return invalid payloads; keep fallback decimals
                 pass
-        return self._market_cache[norm_symbol]
+        return self._market_cache[resolved_key]
 
     async def _get_market_meta_async(self, symbol: str) -> Dict[str, Any]:
-        norm_symbol = self._normalize_symbol(symbol)
-        if norm_symbol not in self._market_cache:
+        resolved_key = self._resolve_market_key(symbol)
+        if resolved_key is None:
             await self._refresh_markets_async()
+            resolved_key = self._resolve_market_key(symbol)
 
-        if norm_symbol not in self._market_cache:
-            raise ValueError(f"未找到交易对: {symbol}")
+        if resolved_key is None:
+            available = sorted([meta.get("symbol", key) for key, meta in self._market_cache.items()])
+            preview = ", ".join(available[:20])
+            raise ValueError(f"未找到交易对: {symbol}. 可用市场(前20): {preview}")
 
-        meta = self._market_cache[norm_symbol]
+        meta = self._market_cache[resolved_key]
         if "price_decimals" not in meta or "size_decimals" not in meta:
             try:
                 await self._load_market_details_async(meta["market_id"])
             except Exception:
                 # order_book_details may return invalid payloads; keep fallback decimals
                 pass
-        return self._market_cache[norm_symbol]
+        return self._market_cache[resolved_key]
 
     def get_market_id(self, symbol: str) -> int:
         """获取交易对对应的 market_id（供 WSS 使用）"""
@@ -463,7 +550,7 @@ class LighterAdapter(BasePerpAdapter):
         account = response.accounts[0]
         positions: List[Position] = []
         for pos in account.positions or []:
-            if symbol and self._normalize_symbol(pos.symbol) != self._normalize_symbol(symbol):
+            if not self._symbol_matches(symbol, pos.symbol):
                 continue
 
             size = self._parse_decimal(pos.position)
@@ -500,7 +587,7 @@ class LighterAdapter(BasePerpAdapter):
         account = response.accounts[0]
         positions: List[Position] = []
         for pos in account.positions or []:
-            if symbol and self._normalize_symbol(pos.symbol) != self._normalize_symbol(symbol):
+            if not self._symbol_matches(symbol, pos.symbol):
                 continue
 
             size = self._parse_decimal(pos.position)
@@ -825,10 +912,19 @@ class LighterAdapter(BasePerpAdapter):
         if lighter_order.market_index in self._market_by_id:
             symbol = self._market_by_id[lighter_order.market_index]["symbol"]
 
+        side_raw = str(getattr(lighter_order, "side", "") or "").lower()
+        if side_raw in ["buy", "long", "b", "bid"]:
+            side = "buy"
+        elif side_raw in ["sell", "short", "s", "ask"]:
+            side = "sell"
+        else:
+            # 某些 lighter 返回 side 为空字符串，此时用 is_ask 兜底推断方向
+            side = "sell" if bool(getattr(lighter_order, "is_ask", False)) else "buy"
+
         return Order(
             order_id=str(lighter_order.order_id),
             symbol=symbol,
-            side=str(lighter_order.side),
+            side=side,
             order_type=str(lighter_order.type),
             quantity=self._parse_decimal(lighter_order.initial_base_amount),
             price=self._parse_decimal(lighter_order.price) if lighter_order.price else None,
@@ -959,7 +1055,10 @@ class LighterAdapter(BasePerpAdapter):
         best_ask = float(order_book.asks[0].price) if order_book.asks else None
 
         if "last_trade_price" not in meta:
-            self._load_market_details(market_id)
+            try:
+                self._load_market_details(market_id)
+            except Exception:
+                pass
             meta = self._market_by_id.get(market_id, meta)
 
         last_price = meta.get("last_trade_price")

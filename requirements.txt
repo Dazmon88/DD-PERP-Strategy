@@ -13,3 +13,5 @@ pyyaml>=6.0.0
 pandas>=2.0.0
 TA-Lib>=0.4.28
 aiohttp_retry
+websocket
+msgpack

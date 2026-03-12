@@ -5,7 +5,10 @@ import time
 import random
 import argparse
 import math
+import urllib.request
+import urllib.parse
 from decimal import Decimal
+from typing import Any, Dict, List, Optional
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
@@ -20,6 +23,8 @@ SYMBOL = None
 GRID_CONFIG = None
 RISK_CONFIG = None
 CANCEL_STALE_ORDERS_CONFIG = None
+TELEGRAM_CONFIG = None
+_LAST_BALANCE_SENT_AT = 0.0
 
 
 def load_config(config_file="config.yaml"):
@@ -75,6 +80,9 @@ def convert_symbol_format(symbol, exchange_name):
             # 通用格式: BTC-USDT / BTC-USD -> BTC
             return symbol.split("-", 1)[0]
         return symbol
+    elif exchange_name == "lighter":
+        # Lighter 适配器内部会做 normalize（移除分隔符并大写），这里保持原样
+        return symbol
     else:
         # StandX 等其他交易所保持原格式
         return symbol
@@ -117,7 +125,7 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
         config_file: 配置文件路径
         active_exchange_override: 通过命令行参数指定的交易所名称（必需）
     """
-    global EXCHANGE_CONFIG, SYMBOL, GRID_CONFIG, RISK_CONFIG, CANCEL_STALE_ORDERS_CONFIG
+    global EXCHANGE_CONFIG, SYMBOL, GRID_CONFIG, RISK_CONFIG, CANCEL_STALE_ORDERS_CONFIG, TELEGRAM_CONFIG
     
     config = load_config(config_file)
     
@@ -146,6 +154,7 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
     GRID_CONFIG = config['grid']
     RISK_CONFIG = config.get('risk', {})
     CANCEL_STALE_ORDERS_CONFIG = config.get('cancel_stale_orders', {})
+    TELEGRAM_CONFIG = config.get('telegram', {})
 
 
 def get_price_precision(price_step):
@@ -411,6 +420,9 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
         return
     
     quantity_decimal = Decimal(str(quantity))
+    exchange_name = str(EXCHANGE_CONFIG.get("exchange_name", "")).lower() if EXCHANGE_CONFIG else ""
+    # Lighter 当前适配器仅映射 gtc/ioc/fok；hype 使用 alo（post-only）
+    limit_tif = "gtc" if exchange_name == "lighter" else "alo"
     
     # 做多订单：buy
     for price in place_long:
@@ -421,7 +433,7 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
                 order_type="limit",
                 quantity=quantity_decimal,
                 price=Decimal(str(price)),
-                time_in_force="alo",
+                time_in_force=limit_tif,
                 reduce_only=False
             )
             print(f"[下单成功][多单] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
@@ -437,7 +449,7 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
                 order_type="limit",
                 quantity=quantity_decimal,
                 price=Decimal(str(price)),
-                time_in_force="alo",
+                time_in_force=limit_tif,
                 reduce_only=False
             )
             print(f"[下单成功][空单] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
@@ -515,6 +527,124 @@ def filter_orders_by_min_distance(place_long, place_short, current_price, min_di
     filtered_long = [p for p in place_long if abs(float(current_price) - float(p)) >= min_distance]
     filtered_short = [p for p in place_short if abs(float(current_price) - float(p)) >= min_distance]
     return filtered_long, filtered_short
+
+
+def send_telegram_message(bot_token: str, chat_id: str, text: str, parse_mode: Optional[str] = None) -> bool:
+    """发送文本到 Telegram。parse_mode 可选 'HTML' 或 'Markdown' 以保留格式。"""
+    if not bot_token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{bot_token.strip()}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"Telegram 发送失败: {e}")
+        return False
+
+
+def try_send_balance_to_telegram(adapter, exchange_name: str) -> None:
+    """若开启 TG 且到达间隔，则获取余额并按配置格式发送到 Telegram。"""
+    global _LAST_BALANCE_SENT_AT
+    cfg = TELEGRAM_CONFIG or {}
+    if not cfg.get("enable", False):
+        return
+    interval = int(cfg.get("interval_seconds", 3600))
+    if interval <= 0:
+        return
+    now = time.time()
+    if now - _LAST_BALANCE_SENT_AT < interval:
+        return
+    bot_token = cfg.get("bot_token", "").strip()
+    chat_id = cfg.get("chat_id", "").strip()
+    if not bot_token or not chat_id:
+        return
+    try:
+        balance = adapter.get_balance()
+        total = float(balance.total_balance) if balance else 0.0
+        position_val = getattr(balance, "position_value", None)
+        if position_val is not None:
+            position_str = f"{float(position_val):.1f}"
+        else:
+            position_str = "0"
+    except Exception as e:
+        print(f"获取余额失败(Telegram): {e}")
+        return
+    fmt = cfg.get("message_format", "[{exchange}余额] {balance}U").strip()
+    exchange_display = (exchange_name or "exchange").upper()
+    text = fmt.format(
+        exchange=exchange_display,
+        balance=f"{total:.1f}",
+        position_value=position_str,
+    )
+    if send_telegram_message(bot_token, chat_id, text):
+        _LAST_BALANCE_SENT_AT = now
+
+    if not cfg.get("send_positions", False):
+        return
+    if not hasattr(adapter, "get_positions_table_data"):
+        return
+    try:
+        rows = adapter.get_positions_table_data()
+    except Exception as e:
+        print(f"获取持仓表格失败(Telegram): {e}")
+        return
+    if not rows:
+        return
+    table_text = format_positions_table(rows, exchange_display)
+    if table_text:
+        send_telegram_message(bot_token, chat_id, table_text, parse_mode="HTML")
+
+
+def format_positions_table(rows: List[Dict[str, Any]], exchange_name: str) -> str:
+    """将持仓列表格式化为等宽表格，便于 TG 展示。使用 <pre> 保持对齐。"""
+    if not rows:
+        return ""
+    col = {"coin": 10, "size": 12, "liq": 12, "posval": 12}
+
+    def _str(x: Any, w: int) -> str:
+        s = str(x) if x is not None and x != "" else "-"
+        return (s[: w - 1] + "…") if len(s) > w else s.ljust(w)
+
+    def _num(x: Any, w: int) -> str:
+        if x == "-" or x is None or x == "":
+            return "-".ljust(w)
+        try:
+            v = float(x)
+            s = ("%.4f" % v).rstrip("0").rstrip(".")
+            return s.rjust(w)
+        except Exception:
+            return _str(x, w)
+
+    header = (
+        _str("币种", col["coin"])
+        + _str("数量", col["size"])
+        + _str("清算", col["liq"])
+        + _str("仓位", col["posval"])
+    )
+    lines = [f"[{exchange_name}仓位]", "", header]
+    for r in rows:
+        coin = r.get("coin", "")
+        size = r.get("size", 0)
+        liq = r.get("liquidation_px", "-")
+        posval = r.get("position_value", "-")
+        line = (
+            _str(coin, col["coin"])
+            + _num(size, col["size"])
+            + _num(liq, col["liq"])
+            + _num(posval, col["posval"])
+        )
+        lines.append(line)
+    def _escape(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    body = "\n".join(_escape(line) for line in lines)
+    return f"<pre>{body}</pre>"
 
 
 def close_position_if_exists(adapter, symbol):
@@ -679,7 +809,7 @@ def run_strategy_cycle(adapter):
 
 def main():
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='网格交易策略脚本（支持 StandX / GRVT / Hype）')
+    parser = argparse.ArgumentParser(description='网格交易策略脚本（支持 StandX / GRVT / Hype / Lighter）')
     parser.add_argument(
         '-c', '--config',
         type=str,
@@ -690,7 +820,7 @@ def main():
         '-e', '--exchange',
         type=str,
         required=True,
-        help='指定要使用的交易所名称（必需），例如: standx、grvt 或 hype'
+        help='指定要使用的交易所名称（必需），例如: standx、grvt、hype 或 lighter'
     )
     args = parser.parse_args()
     
@@ -715,9 +845,11 @@ def main():
         print("策略开始运行，按 Ctrl+C 停止...")
         print(f"休眠间隔: {sleep_interval} 秒\n")
         
+        exchange_name = (EXCHANGE_CONFIG or {}).get("exchange_name", args.exchange) or ""
         while True:
             try:
                 run_strategy_cycle(adapter)
+                try_send_balance_to_telegram(adapter, exchange_name)
                 print(f"\n等待 {sleep_interval} 秒后继续...\n")
                 time.sleep(sleep_interval)
             except KeyboardInterrupt:

@@ -133,7 +133,7 @@ class HypeAdapter(BasePerpAdapter):
             raise Exception(f"Hype 查询余额失败: {e}")
 
         margin_summary = user_state.get("marginSummary", {}) or {}
-        # accountValue 代表账户总权益
+        # accountValue 为账户总权益（现金 + 持仓价值）
         total_str = margin_summary.get("accountValue", "0")
         withdrawable_str = user_state.get("withdrawable", "0")
 
@@ -146,8 +146,15 @@ class HypeAdapter(BasePerpAdapter):
         except Exception:
             withdrawable_val = total_val
 
-        # Hype 的 user_state 中未直接暴露总未实现 pnl，这里简单置 0，
-        # 如后续需要可从各 position["unrealizedPnl"] 聚合。
+        position_value = Decimal("0")
+        for item in user_state.get("assetPositions", []) or []:
+            pos = item.get("position") or {}
+            pv_str = pos.get("positionValue") or "0"
+            try:
+                position_value += Decimal(str(pv_str))
+            except Exception:
+                pass
+
         return Balance(
             total_balance=total_val,
             available_balance=withdrawable_val,
@@ -155,6 +162,7 @@ class HypeAdapter(BasePerpAdapter):
             unrealized_pnl=Decimal("0"),
             margin_used=None,
             margin_available=None,
+            position_value=position_value,
         )
 
     def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
@@ -222,6 +230,65 @@ class HypeAdapter(BasePerpAdapter):
             )
 
         return positions
+
+    def get_positions_table_data(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        获取持仓表格数据（用于 TG 等展示），含币种、数量、清算价、标记价、保证金、仓位价值、资金费率。
+        """
+        dex = self._resolve_dex(symbol)
+        try:
+            user_state = self.info.user_state(self.address, dex=dex)
+        except Exception as e:
+            raise Exception(f"Hype 查询持仓失败: {e}")
+
+        coin_to_ctx: Dict[str, Any] = {}
+        try:
+            meta_and_ctxs = self.info.meta_and_asset_ctxs()
+            if isinstance(meta_and_ctxs, (list, tuple)) and len(meta_and_ctxs) >= 2:
+                meta, asset_ctxs = meta_and_ctxs[0], meta_and_ctxs[1]
+                universe = (meta or {}).get("universe") or []
+                for i, asset_info in enumerate(universe):
+                    if i < len(asset_ctxs):
+                        name = (asset_info or {}).get("name") or ""
+                        if name:
+                            coin_to_ctx[name] = asset_ctxs[i] or {}
+        except Exception:
+            pass
+
+        rows: List[Dict[str, Any]] = []
+        for item in user_state.get("assetPositions", []) or []:
+            pos = item.get("position") or {}
+            coin = pos.get("coin")
+            if not coin:
+                continue
+            if symbol is not None and str(coin) != str(symbol):
+                continue
+            szi_str = pos.get("szi", "0")
+            try:
+                szi = Decimal(str(szi_str))
+            except Exception:
+                continue
+            if szi == 0:
+                continue
+
+            ctx = coin_to_ctx.get(str(coin), {})
+            liquidation_px = pos.get("liquidationPx") or "-"
+            margin_used = pos.get("marginUsed") or "0"
+            position_value = pos.get("positionValue") or "0"
+            mark_px = ctx.get("markPx") or "-"
+            funding = ctx.get("funding") or "-"
+
+            rows.append({
+                "coin": str(coin),
+                "size": abs(float(szi)),
+                "side": "long" if szi > 0 else "short",
+                "liquidation_px": liquidation_px,
+                "mark_px": mark_px,
+                "margin_used": margin_used,
+                "position_value": position_value,
+                "funding": funding,
+            })
+        return rows
 
     def place_order(
         self,

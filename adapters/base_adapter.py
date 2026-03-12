@@ -88,6 +88,7 @@ class Balance:
         unrealized_pnl: Decimal,
         margin_used: Optional[Decimal] = None,
         margin_available: Optional[Decimal] = None,
+        position_value: Optional[Decimal] = None,
     ):
         self.total_balance = total_balance
         self.available_balance = available_balance
@@ -95,7 +96,8 @@ class Balance:
         self.unrealized_pnl = unrealized_pnl
         self.margin_used = margin_used
         self.margin_available = margin_available
-    
+        self.position_value = position_value
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -105,6 +107,7 @@ class Balance:
             "unrealized_pnl": str(self.unrealized_pnl),
             "margin_used": str(self.margin_used) if self.margin_used else None,
             "margin_available": str(self.margin_available) if self.margin_available else None,
+            "position_value": str(self.position_value) if self.position_value is not None else None,
         }
 
 
