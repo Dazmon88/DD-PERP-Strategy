@@ -3,3 +3,5 @@
 strategys/strategy_standx/config.yaml
 strategys/strategy_standx/config.yaml
 *.pyc
+agent.key
+strategys/strategy_common/config.yaml

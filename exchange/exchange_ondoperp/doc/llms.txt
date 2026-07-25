@@ -1,0 +1,143 @@
+# Ondo Perps
+
+## Docs
+
+- [Welcome to Ondo Perps](https://docs.ondoperps.xyz/about.md)
+- [Account Setup](https://docs.ondoperps.xyz/account-set-up.md)
+- [Get Account](https://docs.ondoperps.xyz/api-reference/account/get-account.md): Returns account information for the authenticated user.
+- [Get Open Order Counts](https://docs.ondoperps.xyz/api-reference/account/get-open-order-counts.md): Returns open order counts per market/product for the authenticated account.
+- [Create API Key](https://docs.ondoperps.xyz/api-reference/api-keys/create-api-key.md): Create a new API key. The secret is returned only once.
+- [Delete API Key](https://docs.ondoperps.xyz/api-reference/api-keys/delete-api-key.md): Delete an API key by ID.
+- [List API Keys](https://docs.ondoperps.xyz/api-reference/api-keys/list-api-keys.md): Returns API keys for the authenticated account.
+- [Remove API Key IP Whitelist Entry](https://docs.ondoperps.xyz/api-reference/api-keys/remove-api-key-ip-whitelist-entry.md): Remove an IP address from the whitelist for an API key.
+- [Set API Key IP Whitelist](https://docs.ondoperps.xyz/api-reference/api-keys/set-api-key-ip-whitelist.md): Set or update IP whitelist for an API key.
+- [API Key Authentication](https://docs.ondoperps.xyz/api-reference/api_key_authentication.md): Example of how to use API keys
+- [Complete SIWE Address Book Challenge](https://docs.ondoperps.xyz/api-reference/auth/complete-siwe-address-book-challenge.md): Complete the signed challenge to add a withdrawal address.
+- [Complete SIWE Login](https://docs.ondoperps.xyz/api-reference/auth/complete-siwe-login.md): Complete Sign-In with Ethereum by submitting the signed challenge. Returns JWT.
+- [Get SIWE Address Book Challenge](https://docs.ondoperps.xyz/api-reference/auth/get-siwe-address-book-challenge.md): Get a Sign-In with Ethereum challenge for adding a withdrawal address.
+- [Get SIWE Login Challenge](https://docs.ondoperps.xyz/api-reference/auth/get-siwe-login-challenge.md): Get a Sign-In with Ethereum (ERC-4361) challenge for login.
+- [Invalidate JWT](https://docs.ondoperps.xyz/api-reference/auth/invalidate-jwt.md): Invalidates all JWTs for the authenticated account.
+- [Connect](https://docs.ondoperps.xyz/api-reference/connection/connect.md): Establish a WebSocket connection. After connecting, send JSON messages to interact with the API.
+- [Login](https://docs.ondoperps.xyz/api-reference/connection/login.md): Authenticate the WebSocket connection. Required before subscribing to private channels.
+- [Ping](https://docs.ondoperps.xyz/api-reference/connection/ping.md): Send `{"op": "ping"}` to keep the connection alive. The server responds with `{"type": "pong"}`.
+- [Get Fills](https://docs.ondoperps.xyz/api-reference/fills/get-fills.md): Returns a paginated list of fills for the authenticated account.
+- [Get Fills by Order ID](https://docs.ondoperps.xyz/api-reference/fills/get-fills-by-order-id.md): Returns all fills for a given order. The `orderID` path parameter can be:
+- [Get Fills CSV](https://docs.ondoperps.xyz/api-reference/fills/get-fills-csv.md): Export fills as CSV, sorted reverse chronologically.
+- [Get Funding Fee Payments](https://docs.ondoperps.xyz/api-reference/funding-rate/get-funding-fee-payments.md): Get a paginated history of funding fee payments for the authenticated account. For how funding is calculated and applied, see [Funding rates](/funding-rates).
+- [Get Funding Rate History](https://docs.ondoperps.xyz/api-reference/funding-rate/get-funding-rate-history.md): Get the historical funding rates for a market. For how funding is calculated and applied, see [Funding rates](/funding-rates).
+- [Get Funding Rates](https://docs.ondoperps.xyz/api-reference/funding-rate/get-funding-rates.md): Get an estimate of the current-interval funding rate in a given market, as well as when the next funding is and what premium index measurements make up the funding rate. For how funding is calculated and applied, see [Funding rates](/funding-rates).
+- [Get Mark Prices](https://docs.ondoperps.xyz/api-reference/funding-rate/get-mark-prices.md): Get the current mark prices for all perpetual futures markets. For how mark prices are derived, see [External pricing derivations](/pricing-derivations).
+- [Builder Integration Guide](https://docs.ondoperps.xyz/api-reference/integration_guide.md): Walk-through integrating with Ondo Perps as a builder. This guide uses JavaScript in-browser examples
+- [Get Balance](https://docs.ondoperps.xyz/api-reference/margin-account/get-balance.md): Get a summary of the balance for a margin account. For how positions and balances work, see [Positions and balances](/positions-balances).
+- [Get Liquidation History](https://docs.ondoperps.xyz/api-reference/margin-account/get-liquidation-history.md): Returns a paginated history of liquidation events for the authenticated account. For how liquidations work, see [Liquidations](/def).
+- [Get Max Order Size](https://docs.ondoperps.xyz/api-reference/margin-account/get-max-order-size.md): Get a summary of the maximum order size that can be placed given the current state of the order book and available margin. For how size limits are determined, see [Position size limits](/maximum-position-sizes).
+- [Get Orders Summaries](https://docs.ondoperps.xyz/api-reference/margin-account/get-orders-summaries.md): Returns a summary of resting orders, position, and market order margin requirements for each market.
+- [Get Candles](https://docs.ondoperps.xyz/api-reference/market-data/get-candles.md): Returns OHLCV candlestick data for a perpetual futures market as an array of objects, each with the full field names `startTime`, `open`, `high`, `low`, `close`, and `volume` (values are strings). If you need the TradingView UDF format instead (parallel `o`/`h`/`l`/`c`/`v` arrays of numbers), use `G…
+- [Get Contracts](https://docs.ondoperps.xyz/api-reference/market-data/get-contracts.md): Gets a list of perpetual futures contracts and their current market data. For the list of supported markets, see [Markets](/markets).
+- [Get Open Interest](https://docs.ondoperps.xyz/api-reference/market-data/get-open-interest.md): Get open interest across all perpetual futures markets.
+- [Get Order Book Depth](https://docs.ondoperps.xyz/api-reference/market-data/get-order-book-depth.md): Returns the current order book depth snapshot for a market.
+- [Get Price History (TradingView)](https://docs.ondoperps.xyz/api-reference/market-data/get-price-history-tradingview.md): Returns historical bar data in TradingView UDF format, as required by the TradingView charting library: a single object with parallel arrays keyed `t`, `o`, `h`, `l`, `c`, and `v` (values are numbers), plus a status field `s`. For a standard array-of-objects representation with full field names (`op…
+- [Get Symbol Info (TradingView)](https://docs.ondoperps.xyz/api-reference/market-data/get-symbol-info-tradingview.md): Returns symbol metadata in TradingView UDF format. See https://www.tradingview.com/rest-api-spec/#operation/getSymbolInfo.
+- [Get Trades](https://docs.ondoperps.xyz/api-reference/market-data/get-trades.md): Returns a paginated list of public trades for a market.
+- [Get Volume](https://docs.ondoperps.xyz/api-reference/market-data/get-volume.md): Get 24-hour trading volume across all perpetual futures markets.
+- [Get Markets](https://docs.ondoperps.xyz/api-reference/markets/get-markets.md): Returns available trading markets. For the list of supported markets, see [Markets](/markets).
+- [Batch Cancel Orders](https://docs.ondoperps.xyz/api-reference/orders/batch-cancel-orders.md): Cancels multiple orders in a single call. Returns results for each order. Provide a comma-separated list of order IDs via the `orderIDs` query parameter. Each entry can be an internal order ID or `client:{clientOrderID}`.
+- [Cancel All Orders](https://docs.ondoperps.xyz/api-reference/orders/cancel-all-orders.md): Cancels all orders for the authenticated user. Optionally restricted to a single market.
+- [Cancel Order by ID](https://docs.ondoperps.xyz/api-reference/orders/cancel-order-by-id.md): Cancels an individual order by order ID. The `orderID` path parameter can be:
+- [Create Batched Orders](https://docs.ondoperps.xyz/api-reference/orders/create-batched-orders.md): Creates multiple orders in a single API call. Some orders may succeed while others fail. The response code is 2XX as long as there is no internal server error. Returns 400 with `error_code=batch_order_empty` if the `orders` array is empty. Returns 400 with `error_code=batch_order_too_many_orders` if…
+- [Create Order](https://docs.ondoperps.xyz/api-reference/orders/create-order.md): Creates a limit or market order. Change the "type" field to switch between order types. If `postOnly` is `true` and an order would match at placement, a 400 is returned with error `post_only_has_match`. For the available order types and their behavior, see [Order types](/order-types).
+- [Get Order by ID](https://docs.ondoperps.xyz/api-reference/orders/get-order-by-id.md): Gets an individual order by order ID. The `orderID` path parameter can be:
+- [Get Orders](https://docs.ondoperps.xyz/api-reference/orders/get-orders.md): Returns a paginated list of orders matching the given parameters.
+- [Get Orders CSV](https://docs.ondoperps.xyz/api-reference/orders/get-orders-csv.md): Export filled orders as CSV, sorted reverse chronologically.
+- [Get Portfolio Summary](https://docs.ondoperps.xyz/api-reference/portfolio/get-portfolio-summary.md): Returns current portfolio metrics for the authenticated account: margin balance, net invested, PnL, volume metrics, and Sharpe ratios (when enabled and sufficient data).
+- [Get Portfolio Summary Graph](https://docs.ondoperps.xyz/api-reference/portfolio/get-portfolio-summary-graph.md): Returns time-series portfolio snapshots for the authenticated account. Optional query parameter `range` controls the bucket size: 7d (default), 24h, 30d, or all.
+- [Get Leverage](https://docs.ondoperps.xyz/api-reference/positions/get-leverage.md): Returns the current leverage setting(s) for the authenticated account. If `market` is provided, returns leverage for that market only; otherwise returns leverage for all markets. For how leverage and margin work, see [Leverage](/leverage).
+- [Get Positions](https://docs.ondoperps.xyz/api-reference/positions/get-positions.md): Returns all open positions for the authenticated account. For how positions and balances work, see [Positions and balances](/positions-balances).
+- [Set Leverage](https://docs.ondoperps.xyz/api-reference/positions/set-leverage.md): Sets the leverage for a market. Leverage must be a positive integer and cannot exceed the market's maximum leverage. Reducing leverage while insufficient margin is available will return 400 with `error_code=insufficient_margin`. For how leverage and margin work, see [Leverage](/leverage).
+- [Subscribe: Deposits](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-deposits.md): Subscribe to the `deposits` channel. Requires authentication (login first).
+- [Subscribe: Perps Balance](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-balance.md): Subscribe to the `balancePerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Dead Man's Switch](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-dead-mans-switch.md): Subscribe to the `cancelAllOrdersAfterPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Fills](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-fills.md): Subscribe to the `fillsPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Funding Payments](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-funding-payments.md): Subscribe to the `fundingPaymentsPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Liquidation](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-liquidation.md): Subscribe to the `liquidationPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Liquidation Announcements](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-liquidation-announcements.md): Subscribe to the `liquidationAnnouncementsPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Margin Transfers](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-margin-transfers.md): Subscribe to the `marginTransfersPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Order Summaries](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-order-summaries.md): Subscribe to the `ordersSummariesPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Orders](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-orders.md): Subscribe to the `ordersPerps` channel. Requires authentication (login first).
+- [Subscribe: Perps Positions](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-perps-positions.md): Subscribe to the `positionsPerps` channel. Requires authentication (login first).
+- [Subscribe: Withdrawals](https://docs.ondoperps.xyz/api-reference/private-channels/subscribe:-withdrawals.md): Subscribe to the `withdrawals` channel. Requires authentication (login first).
+- [Subscribe: Perps Depth Book](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-depth-book.md): Subscribe to the `depthBooksPerps` channel.
+- [Subscribe: Perps Funding Rates](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-funding-rates.md): Subscribe to the `fundingRatesPerps` channel.
+- [Subscribe: Perps Kline / Candlesticks](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-kline-candlesticks.md): Subscribe to the `kLinePerps` channel.
+- [Subscribe: Perps Mark Prices](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-mark-prices.md): Subscribe to the `markPricesPerps` channel.
+- [Subscribe: Perps Top of Book](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-top-of-book.md): Subscribe to the `topOfBooksPerps` channel.
+- [Subscribe: Perps Trades](https://docs.ondoperps.xyz/api-reference/public-channels/subscribe:-perps-trades.md): Subscribe to the `tradesPerps` channel.
+- [Sandbox Deposit](https://docs.ondoperps.xyz/api-reference/sandbox/sandbox-deposit.md): Credits the account with funds in sandbox environment only.
+- [Sandbox Withdrawal](https://docs.ondoperps.xyz/api-reference/sandbox/sandbox-withdrawal.md): Debits the account in sandbox environment only.
+- [Get Stop Orders](https://docs.ondoperps.xyz/api-reference/stop-orders/get-stop-orders.md): Gets a list of all stop orders for all markets. This section covers Position-Level stop orders only (take-profit and stop-loss attached to open positions). For TP/SL attached to limit orders, see the order creation payload (takeProfit, stopLoss, etc.). For how stop orders work, see [Take profit and…
+- [Remove Stop Order](https://docs.ondoperps.xyz/api-reference/stop-orders/remove-stop-order.md): Remove a stop order. If no type is specified, removes both stop loss and take profit. For how stop orders work, see [Take profit and stop loss](/take-profit-and-stop-loss).
+- [Set Stop Order](https://docs.ondoperps.xyz/api-reference/stop-orders/set-stop-order.md): Set a stop order for a particular position defined by market and direction. For how stop orders work, see [Take profit and stop loss](/take-profit-and-stop-loss).
+- [Get Status](https://docs.ondoperps.xyz/api-reference/tool/get-status.md): Returns public API and system status.
+- [Hello](https://docs.ondoperps.xyz/api-reference/tool/hello.md): Simple health check. Returns a static JSON payload.
+- [Cancel TWAP Order](https://docs.ondoperps.xyz/api-reference/twap-orders/cancel-twap-order.md): Cancels a running TWAP order. Child orders already placed are not affected. For how TWAP execution works, see [TWAP orders](/time-weighted-average-price).
+- [Create TWAP Order](https://docs.ondoperps.xyz/api-reference/twap-orders/create-twap-order.md): Creates a new TWAP (Time-Weighted Average Price) order. The order is split into child orders placed at regular intervals over the specified running time. Running time must be between 5 minutes and 24 hours and a multiple of the frequency. The number of child orders (runningTime / frequency) must be…
+- [Get Running TWAP Orders](https://docs.ondoperps.xyz/api-reference/twap-orders/get-running-twap-orders.md): Returns all currently running TWAP orders for the authenticated account. Optionally filter by market. For how TWAP execution works, see [TWAP orders](/time-weighted-average-price).
+- [Get TWAP Order by ID](https://docs.ondoperps.xyz/api-reference/twap-orders/get-twap-order-by-id.md): Returns a single TWAP order by its ID. For how TWAP execution works, see [TWAP orders](/time-weighted-average-price).
+- [Get TWAP Order Fills](https://docs.ondoperps.xyz/api-reference/twap-orders/get-twap-order-fills.md): Returns all fills for all child orders of a TWAP order. For how TWAP execution works, see [TWAP orders](/time-weighted-average-price).
+- [Get TWAP Order History](https://docs.ondoperps.xyz/api-reference/twap-orders/get-twap-order-history.md): Returns a paginated list of completed or cancelled TWAP orders for the authenticated account. For how TWAP execution works, see [TWAP orders](/time-weighted-average-price).
+- [Edit Address Book Entry](https://docs.ondoperps.xyz/api-reference/wallet/edit-address-book-entry.md): Update label for a withdrawal address.
+- [Export Deposits CSV](https://docs.ondoperps.xyz/api-reference/wallet/export-deposits-csv.md): Exports the account's deposit history as a downloadable CSV for the given time range. Columns: `id`, `time` (RFC 3339, UTC), `coin`, `size`, `status`. For supported assets and deposit steps, see [Funding your account](/funding-your-account).
+- [Export Withdrawals CSV](https://docs.ondoperps.xyz/api-reference/wallet/export-withdrawals-csv.md): Exports the account's withdrawal history as a downloadable CSV for the given time range. Columns: `time` (RFC 3339, UTC), `coin`, `size`, `address`, `status`. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [Get Address Book](https://docs.ondoperps.xyz/api-reference/wallet/get-address-book.md): Returns withdrawal address book entries for the authenticated account.
+- [Get Deposit by ID](https://docs.ondoperps.xyz/api-reference/wallet/get-deposit-by-id.md): Returns a single deposit by transaction ID. For supported assets and deposit steps, see [Funding your account](/funding-your-account).
+- [Get Withdrawal by ID](https://docs.ondoperps.xyz/api-reference/wallet/get-withdrawal-by-id.md): Returns a single withdrawal by transaction ID. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [Get Withdrawal Limits](https://docs.ondoperps.xyz/api-reference/wallet/get-withdrawal-limits.md): Returns withdrawal limits for the authenticated account. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [Get Withdrawal Status](https://docs.ondoperps.xyz/api-reference/wallet/get-withdrawal-status.md): Get status of one or more withdrawals. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [List Deposit Addresses](https://docs.ondoperps.xyz/api-reference/wallet/list-deposit-addresses.md): Returns the list of deposit addresses for the account. For supported assets and deposit steps, see [Funding your account](/funding-your-account).
+- [List Deposits](https://docs.ondoperps.xyz/api-reference/wallet/list-deposits.md): Returns deposit history for the authenticated account. For supported assets and deposit steps, see [Funding your account](/funding-your-account).
+- [List Withdrawals](https://docs.ondoperps.xyz/api-reference/wallet/list-withdrawals.md): Returns withdrawal history for the authenticated account. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [Provision Deposit Address](https://docs.ondoperps.xyz/api-reference/wallet/provision-deposit-address.md): Provision a new deposit address for a given symbol/chain. For supported assets and deposit steps, see [Funding your account](/funding-your-account).
+- [Remove Address Book Entry](https://docs.ondoperps.xyz/api-reference/wallet/remove-address-book-entry.md): Remove a withdrawal address from the address book.
+- [Withdraw](https://docs.ondoperps.xyz/api-reference/wallet/withdraw.md): Submit a withdrawal request. Rate limited per account. For the withdrawal process and timing, see [Withdrawals](/withdrawals).
+- [Architecture](https://docs.ondoperps.xyz/architecture.md)
+- [Auto-Deleveraging (ADL)](https://docs.ondoperps.xyz/auto-deleveraging.md)
+- [Collateral Management](https://docs.ondoperps.xyz/collateral-management.md)
+- [Collateral Value](https://docs.ondoperps.xyz/collateral-value.md)
+- [Contact](https://docs.ondoperps.xyz/contact.md)
+- [Liquidations and Insurance](https://docs.ondoperps.xyz/def.md)
+- [Fees](https://docs.ondoperps.xyz/fees.md)
+- [Funding Rates](https://docs.ondoperps.xyz/funding-rates.md)
+- [Funding Your Account](https://docs.ondoperps.xyz/funding-your-account.md)
+- [Key Trading Concepts](https://docs.ondoperps.xyz/key-trading-concepts.md)
+- [Leverage](https://docs.ondoperps.xyz/leverage.md)
+- [Mark Price Protection](https://docs.ondoperps.xyz/mark-price-protection.md)
+- [Markets](https://docs.ondoperps.xyz/markets.md)
+- [Order Types](https://docs.ondoperps.xyz/order-types.md)
+- [Overview](https://docs.ondoperps.xyz/overview.md)
+- [Perpetual Futures](https://docs.ondoperps.xyz/perpetual-futures.md)
+- [Placing Your First Order](https://docs.ondoperps.xyz/placing-your-first-order.md)
+- [Positions, Balances, and Leverage](https://docs.ondoperps.xyz/positions-balances.md)
+- [Positions Panel](https://docs.ondoperps.xyz/positions-panel.md)
+- [Premium Index](https://docs.ondoperps.xyz/premium-index.md)
+- [External Pricing Derivations](https://docs.ondoperps.xyz/pricing-derivations.md)
+- [Profit & Loss](https://docs.ondoperps.xyz/profit-and-loss.md)
+- [Public Beta ](https://docs.ondoperps.xyz/public-beta.md)
+- [Measuring Risk](https://docs.ondoperps.xyz/risk-measures.md)
+- [Settlement](https://docs.ondoperps.xyz/settlement.md)
+- [Take Profit / Stop Loss ](https://docs.ondoperps.xyz/take-profit-and-stop-loss.md)
+- [Technology](https://docs.ondoperps.xyz/technology.md)
+- [TWAP](https://docs.ondoperps.xyz/time-weighted-average-price.md)
+- [Weekend Mechanics](https://docs.ondoperps.xyz/weekend-mechanics.md)
+- [Weekend and Extended Hours Trading](https://docs.ondoperps.xyz/weekend-trading.md)
+- [Withdrawals](https://docs.ondoperps.xyz/withdrawals.md)
+
+## OpenAPI Specs
+
+- [rest-spec](https://docs.ondoperps.xyz/api-reference/rest-spec.json)
+- [ws-spec](https://docs.ondoperps.xyz/api-reference/ws-spec.json)
+- [gm-be-api-spec](https://docs.ondoperps.xyz/gm-be-api-spec.json)
+- [openapi](https://docs.ondoperps.xyz/api-reference/openapi.json)
+
+## Optional
+
+- [Ondo Perps Website](https://ondoperps.xyz)

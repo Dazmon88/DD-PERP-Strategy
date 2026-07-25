@@ -1,0 +1,4064 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "GM Backend API",
+    "description": "An API spec for the Ondo GM Backend API.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "description": "SwaggerHub API Auto Mocking",
+      "url": "https://virtserver.swaggerhub.com/ondofinance-8d0/gm-api/1.0.0"
+    },
+    {
+      "url": "https://api.gm.ondo.finance",
+      "description": "GM Backend API"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Attestations",
+      "description": "Get Mint and Redeem Attestations"
+    },
+    {
+      "name": "Assets",
+      "description": "Get Asset Price Information"
+    },
+    {
+      "name": "Tickers",
+      "description": "Get Ticker Information"
+    },
+    {
+      "name": "Chains",
+      "description": "Get On Chain Data"
+    },
+    {
+      "name": "Limits",
+      "description": "Get Trading Limits"
+    },
+    {
+      "name": "Status",
+      "description": "Get Market and Trading Statuses"
+    }
+  ],
+  "paths": {
+    "/v1/attestations": {
+      "post": {
+        "tags": [
+          "Attestations"
+        ],
+        "summary": "Request a Mint or Redeem Attestation",
+        "description": "An attestation is a signed payload that authorizes a user to mint or redeem tokens. Each attestation is only valid for a limited time and is determined by the duration in the request. A user can specify a duration of `short` for a tighter price spread or `long` for an extended validity period.\n\nNote: There are specific user and session limits which can prevent the creation of an attestation. For more information on limits, see the [Get Trading Limits](https://ondo-finance.readme.io/reference/gettradinglimits) endpoint.\n\nSee also: [Error Codes](https://ondo-finance.readme.io/reference/error-codes#/)\n",
+        "operationId": "createAttestation",
+        "requestBody": {
+          "description": "Request a mint or redeem attestation.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AttestationByTokenAmountRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/AttestationByNotionalValueRequest"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attestation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/attestations/soft": {
+      "post": {
+        "tags": [
+          "Attestations"
+        ],
+        "summary": "Request a Soft Attestation Quote",
+        "description": "A soft quote provides pricing information for mint or redeem operations without creating an actual attestation. Unlike the [Request a Mint or Redeem Attestation endpoint](https://ondo-finance.readme.io/reference/createattestation), soft quotes:\n\n- Are not eligible for on-chain submission\n- Do not count against user limits (Active Notional Value, Session Notional Value, or Active Attestations)\n- Serve as pricing references for quote validation and user interface display\n- Do not include authentication fields such as `attestationId`, `userId`, `expiration`, or `signature`\n\nThis endpoint can be used to acquire estimated pricing without impacting trading limits or creating binding commitments.\n\nSee also: [Error Codes](https://ondo-finance.readme.io/reference/error-codes#/)\n",
+        "operationId": "createSoftAttestationQuote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SoftQuoteByTokenAmountRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SoftQuoteByNotionalValueRequest"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SoftQuote"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/all/prices/latest": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Current Prices for All Supported Assets",
+        "description": "This endpoint retrieves the latest prices for all supported assets. Note that the `primaryMarket` represents the on-chain token while the `underlyingMarket`\nrepresents the off-chain collateralized stock. Assets can be sorted by price in either ascending or descending order.\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllPrices",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "The sort direction for prices.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssetPrice"
+                  }
+                },
+                "example": [
+                  {
+                    "primaryMarket": {
+                      "symbol": "TSLAon",
+                      "price": "48.516937826065743784"
+                    },
+                    "underlyingMarket": {
+                      "ticker": "TSLA",
+                      "price": "338.88"
+                    },
+                    "timestamp": 1755888858907
+                  },
+                  {
+                    "primaryMarket": {
+                      "symbol": "AAPLon",
+                      "price": "171.383708297189751178"
+                    },
+                    "underlyingMarket": {
+                      "ticker": "AAPL",
+                      "price": "228.330909"
+                    },
+                    "timestamp": 1755888858893
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/prices/latest": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Current Price for an Asset",
+        "description": "This endpoint retrieves the latest price for a specific asset. Note that the `primaryMarket` represents the on-chain token while the `underlyingMarket`\nrepresents the off-chain collateralized stock.\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getPrice",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "description": "The GM token symbol",
+            "example": "AAPLon",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Price fetched successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetPrice"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/all/prices/latest/enhanced": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Enhanced Prices for All Supported Assets",
+        "description": "This endpoint retrieves the latest prices along with the price change and percentage change in the last 24 hours of open market for all supported assets. Assets can be sorted by price in either ascending or descending order.\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllAssetEnhancedPrices",
+        "parameters": [
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "The sort direction for prices.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssetEnhancedPrice"
+                  }
+                },
+                "example": [
+                  {
+                    "symbol": "NFLXon",
+                    "price": "860.66471",
+                    "priceChange24h": "26.80883",
+                    "priceChangePct24h": "3.215043587628116264",
+                    "timestamp": 1769190970623
+                  },
+                  {
+                    "symbol": "QQQon",
+                    "price": "533.707886795396811068",
+                    "priceChange24h": "0.175407218134272389",
+                    "priceChangePct24h": "0.032876577312266724",
+                    "timestamp": 1769190970623
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/prices/ohlc": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get OHLC (Open, High, Low, Close) Data for an Asset",
+        "operationId": "getOHLCPrices",
+        "description": "This endpoint retrieves historical Open, High, Low, Close (OHLC) price data for both the primary market (on-chain token) and underlying market (off-chain stock) for a specified asset.\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nThe `interval` parameter determines the bucket size for data points, while the `range` parameter determines how far back historically to look for price data. See below for valid interval/range pairs.\n\nValid `interval`/`range` pairs:\n- 1min/1day *(rolling 24-hour period of open market data)*\n- 5min/1day\n- 15min/1day\n- 1hour/1month\n- 4hour/1month\n- 12hour/3month\n- 1day/3month\n- 1day/6month\n- 1day/1year\n- 1day/all *(all historical data)*\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "description": "The GM token symbol",
+            "required": true,
+            "example": "AAPLon",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "description": "The time interval between data points.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/IntervalEnum"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "description": "The lookback range for historical data.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RangeEnum"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OHLCResponse"
+                },
+                "example": {
+                  "interval": "1day",
+                  "range": "3month",
+                  "primaryMarket": {
+                    "symbol": "BABAon",
+                    "data": [
+                      {
+                        "timestamp": 1750723200000,
+                        "open": "117.0544",
+                        "high": "117.3426",
+                        "low": "117.0544",
+                        "close": "117.3426"
+                      },
+                      {
+                        "timestamp": 1750809600000,
+                        "open": "117.87",
+                        "high": "117.87",
+                        "low": "114.3677",
+                        "close": "114.8076"
+                      },
+                      "..."
+                    ]
+                  },
+                  "underlyingMarket": {
+                    "ticker": "BABA",
+                    "data": [
+                      {
+                        "timestamp": 1750723200000,
+                        "open": "117.0544",
+                        "high": "117.3426",
+                        "low": "117.0544",
+                        "close": "117.3426"
+                      },
+                      {
+                        "timestamp": 1750809600000,
+                        "open": "117.87",
+                        "high": "117.87",
+                        "low": "114.3677",
+                        "close": "114.8076"
+                      },
+                      "..."
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/all/market": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Market Data for All Supported Assets",
+        "description": "This endpoint retrieves comprehensive market data for all supported assets. Each asset includes both primary market (on-chain token) and underlying market (off-chain stock) information.\n\nPrimary market data includes current price, 24-hour price changes, 24-hour historical chart data, and total token holders. Underlying market data provides stock fundamentals like company name, 52-week highs/lows, trading volume, shares outstanding, and market capitalization.\n\nThis endpoint is useful for dashboard overviews and market analysis across the entire asset portfolio.\n\nThe \"Tradable Sessions\" parameter indicates the tradability for the asset; for example, some assets are available in the regular and extended stock sessions, but not overnight. Learn more about sessions at [Get Current Market Status](https://ondo-finance.readme.io/reference/getmarketstatus#/).\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllMarkets",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Market"
+                  }
+                },
+                "example": [
+                  {
+                    "primaryMarket": {
+                      "symbol": "ADBEon",
+                      "price": "361.986667",
+                      "priceChange24h": "8.76",
+                      "priceChangePct24h": "2.479993958100564361",
+                      "priceHistory24h": [
+                        {
+                          "timestamp": 1755802800000,
+                          "price": "353.226667"
+                        },
+                        {
+                          "timestamp": 1755803700000,
+                          "price": "353.216667"
+                        },
+                        "..."
+                      ],
+                      "totalHolders": 7,
+                      "sharesMultiplier": "1"
+                    },
+                    "underlyingMarket": {
+                      "ticker": "ADBE",
+                      "name": "Adobe Inc.",
+                      "price": "361.986667",
+                      "priceHigh52w": "587.75",
+                      "priceLow52w": "330.04",
+                      "volume": "1851321",
+                      "averageVolume": "3610882",
+                      "sharesOutstanding": "424200000",
+                      "marketCap": "149925006000"
+                    },
+                    "timestamp": 1755890061815
+                  },
+                  {
+                    "primaryMarket": {
+                      "symbol": "APPon",
+                      "price": "440.094",
+                      "priceChange24h": "20.824",
+                      "priceChangePct24h": "4.966727884179645574",
+                      "priceHistory24h": [
+                        {
+                          "timestamp": 1755802800000,
+                          "price": "419.27"
+                        },
+                        {
+                          "timestamp": 1755803700000,
+                          "price": "418.55"
+                        },
+                        "..."
+                      ],
+                      "totalHolders": 7,
+                      "sharesMultiplier": "1",
+                      "tradableSessions": [
+                        "premarket",
+                        "regular",
+                        "postmarket",
+                        "overnight"
+                      ]
+                    },
+                    "underlyingMarket": {
+                      "ticker": "APP",
+                      "name": "Applovin Corporation Class A Common Stock",
+                      "price": "440.094",
+                      "priceHigh52w": "525.15",
+                      "priceLow52w": "82.51",
+                      "volume": "5220144",
+                      "averageVolume": "6480111",
+                      "sharesOutstanding": "307636373",
+                      "marketCap": "139487499535"
+                    },
+                    "timestamp": 1755890062869
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/market": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Market Data for an Asset",
+        "description": "This endpoint retrieves comprehensive market data for a specific asset, containing both primary market (on-chain token) and underlying market (off-chain stock) information.\n\nPrimary market data includes current price, 24-hour price changes, 24-hour historical chart data, and total token holders. Underlying market data provides stock fundamentals like company name, 52-week highs/lows, trading volume, shares outstanding, and market capitalization.\n\nThis endpoint is useful for dashboard overviews and market analysis across the entire asset portfolio.\n\nThe \"Tradable Sessions\" parameter indicates the tradability for the asset; for example, some assets are available in the regular and extended stock sessions, but not overnight. Learn more about sessions at [Get Current Market Status](https://ondo-finance.readme.io/reference/getmarketstatus#/).\n\nPrices are intended for display only. For real-time trading prices, use the [Soft Attestation Quote](https://ondo-finance.readme.io/reference/createsoftattestationquote) API. We do not recommend using the price feeds as an oracle for these assets. An official oracle is in development and will be documented when available. For questions, contact [support@ondo.finance](mailto:support@ondo.finance).\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getMarket",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "required": true,
+            "description": "The GM token symbol",
+            "example": "AAPLon",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Market"
+                },
+                "example": {
+                  "primaryMarket": {
+                    "symbol": "ADBEon",
+                    "price": "361.986667",
+                    "priceChange24h": "8.76",
+                    "priceChangePct24h": "2.479993958100564361",
+                    "priceHistory24h": [
+                      {
+                        "timestamp": 1755802800000,
+                        "price": "353.226667"
+                      },
+                      {
+                        "timestamp": 1755803700000,
+                        "price": "353.216667"
+                      },
+                      "..."
+                    ],
+                    "totalHolders": 7,
+                    "sharesMultiplier": "1",
+                    "tradableSessions": [
+                      "premarket",
+                      "regular",
+                      "postmarket",
+                      "overnight"
+                    ]
+                  },
+                  "underlyingMarket": {
+                    "ticker": "ADBE",
+                    "name": "Adobe Inc.",
+                    "price": "361.986667",
+                    "priceHigh52w": "587.75",
+                    "priceLow52w": "330.04",
+                    "volume": "1851321",
+                    "averageVolume": "3610882",
+                    "sharesOutstanding": "424200000",
+                    "marketCap": "149925006000"
+                  },
+                  "timestamp": 1755890061815
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/dividends": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Dividend Information for an Asset",
+        "description": "This endpoint retrieves the latest dividend information for a specific asset, including dividend yield, payment history, and upcoming payment dates.\n\n**Dividend Yield**\n\nThe dividend yield is calculated based on the past year's worth of dividend payments and the current stock price.\n\n**Payout Frequencies**\n\nBelow outline the day ranges for each payout frequency:\n\n| Frequency         | Average Days Between Dividends |\n|-------------------|:------------------------------:|\n| **none**          | N/A                            |\n| **monthly**       | 25-35 days                     |\n| **quarterly**     | 80-100 days                    |\n| **semi-annually** | 160-200 days                   |\n| **yearly**        | 345-385 days                   |\n| **irregular**     | Outside defined ranges         |\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getLatestDividend",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "description": "The GM token symbol",
+            "example": "AAPLon",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DividendInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/all/addresses": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get All Contract Addresses Across Networks",
+        "description": "This endpoint retrieves all contract addresses for all supported assets across different blockchain networks.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllAssetAddresses",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolAssetAddresses"
+                  }
+                },
+                "example": [
+                  {
+                    "symbol": "AAPLon",
+                    "addresses": [
+                      {
+                        "networkChainId": "bsc-56",
+                        "address": "0x390a684ef9cade28a7ad0dfa61ab1eb3842618c4",
+                        "decimals": 18
+                      },
+                      {
+                        "networkChainId": "ethereum-1",
+                        "address": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+                        "decimals": 18
+                      }
+                    ]
+                  },
+                  {
+                    "symbol": "ABNBon",
+                    "addresses": [
+                      {
+                        "networkChainId": "bsc-56",
+                        "address": "0xef80743f78d98fc2b47a2253b293152ce8b879ba",
+                        "decimals": 18
+                      },
+                      {
+                        "networkChainId": "ethereum-1",
+                        "address": "0xb035c3d5083bdc80074f380aebc9fcb68aba0a28",
+                        "decimals": 18
+                      }
+                    ]
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/addresses": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Contract Addresses for an Asset",
+        "description": "This endpoint retrieves all contract addresses for a specific asset across different blockchain networks.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAssetAddresses",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "description": "The GM token symbol",
+            "example": "AAPLon",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolAssetAddresses"
+                  }
+                },
+                "example": {
+                  "symbol": "AAPLon",
+                  "addresses": [
+                    {
+                      "networkChainId": "bsc-56",
+                      "address": "0x390a684ef9cade28a7ad0dfa61ab1eb3842618c4",
+                      "decimals": 18
+                    },
+                    {
+                      "networkChainId": "ethereum-1",
+                      "address": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+                      "decimals": 18
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/all/metadata": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Metadata for All Supported Assets",
+        "description": "Returns all metadata for all symbols including identifiers, addresses, and classification tags.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllAssetMetadata",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MetadataEntry"
+                  }
+                },
+                "example": [
+                  {
+                    "symbol": "AAPLon",
+                    "ticker": "AAPL",
+                    "coingeckoId": "apple-ondo-tokenized-stock",
+                    "coinmarketCapId": "38037",
+                    "addresses": [
+                      {
+                        "networkChainId": "bsc-56",
+                        "address": "0x390a684ef9cade28a7ad0dfa61ab1eb3842618c4",
+                        "decimals": 18
+                      },
+                      {
+                        "networkChainId": "ethereum-1",
+                        "address": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+                        "decimals": 18
+                      }
+                    ],
+                    "tags": {
+                      "assetClass": "Equities",
+                      "instrumentType": "Stock"
+                    }
+                  },
+                  {
+                    "symbol": "ABNBon",
+                    "ticker": "ABNB",
+                    "coingeckoId": "airbnb-ondo-tokenized-stock",
+                    "coinmarketCapId": "38044",
+                    "addresses": [
+                      {
+                        "networkChainId": "bsc-56",
+                        "address": "0xef80743f78d98fc2b47a2253b293152ce8b879ba",
+                        "decimals": 18
+                      },
+                      {
+                        "networkChainId": "ethereum-1",
+                        "address": "0xb035c3d5083bdc80074f380aebc9fcb68aba0a28",
+                        "decimals": 18
+                      }
+                    ],
+                    "tags": {
+                      "assetClass": "Equities",
+                      "instrumentType": "Stock"
+                    }
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/assets/{symbol}/shares-multiplier": {
+      "get": {
+        "tags": [
+          "Assets"
+        ],
+        "summary": "Get Shares Multiplier History for an Asset",
+        "operationId": "getSharesMultiplier",
+        "description": "This endpoint retrieves the shares multiplier history for a specific asset. Note that some asset events do not result in the shares multiplier value changing. This endpoint will show the earliest timestamp for each value change.\n\nThe `range` parameter determines how far back historically to look for shares multiplier data. See below for valid range values.\n\nValid `range` values:\n- 1day\n- 1month\n- 3month\n- 6month\n- 1year\n- all *(all historical data)*\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "path",
+            "description": "The GM token symbol",
+            "required": true,
+            "example": "AAPLon",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "range",
+            "in": "query",
+            "description": "The lookback range for historical data.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RangeEnum"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharesMultiplierResponse"
+                },
+                "example": {
+                  "history": [
+                    {
+                      "sharesMultiplier": "0.481891643381832405",
+                      "changeTimestamp": 1762736520093
+                    },
+                    {
+                      "sharesMultiplier": "0.481566453805576042",
+                      "changeTimestamp": 1754870400044
+                    },
+                    {
+                      "sharesMultiplier": "0.481185641420460013",
+                      "changeTimestamp": 1753992000000
+                    },
+                    "..."
+                  ],
+                  "timestamp": 1770161184102
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The provided asset symbol does not exist and cannot be found. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "NOT_FOUND",
+                      "message": "The provided asset symbol does not exist and cannot be found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/tickers": {
+      "get": {
+        "tags": [
+          "Tickers"
+        ],
+        "summary": "Get Price and Volume Data for All Supported Tickers",
+        "description": "This endpoint retrieves the latest price and volume data for all supported tickers. A ticker represents a specific asset in the market.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAllTickers",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TickerResponse"
+                  }
+                },
+                "example": [
+                  {
+                    "tickerId": "TSLAon_USDon",
+                    "baseCurrency": "TSLAon",
+                    "targetCurrency": "USDon",
+                    "lastPrice": 338.42375,
+                    "baseVolume": 72.720573083,
+                    "targetVolume": 24610.369044819
+                  },
+                  {
+                    "tickerId": "AAPLon_USDon",
+                    "baseCurrency": "AAPLon",
+                    "targetCurrency": "USDon",
+                    "lastPrice": 228.195452051,
+                    "baseVolume": 2761.011833446,
+                    "targetVolume": 630050.34345192
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/chains/{chainId}/balances": {
+      "get": {
+        "tags": [
+          "Chains"
+        ],
+        "summary": "Get Token Balances for a User or Token",
+        "description": "This endpoint retrieves all token balances for a GM Chain. Results can be optionally filtered by `tokenAddress`, `userAddress`, or both parameters together. If no filters are provided, all balances on the chain will be returned.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getBalances",
+        "parameters": [
+          {
+            "name": "chainId",
+            "in": "path",
+            "description": "The chain's identifier including the chain name and chain id.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/GMChains"
+            }
+          },
+          {
+            "name": "tokenAddress",
+            "in": "query",
+            "description": "Filter by a token contract address (optional).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userAddress",
+            "in": "query",
+            "description": "Filter by a user wallet address (optional).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ChainToken"
+                      }
+                    }
+                  },
+                  "required": [
+                    "tokens"
+                  ]
+                },
+                "example": {
+                  "tokens": [
+                    {
+                      "tokenAddress": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+                      "tokenSymbol": "AAPLon",
+                      "balances": [
+                        {
+                          "holderAddress": {
+                            "account": "0x13116e8b4ffc8125b859ec60917fba540e59e55e"
+                          },
+                          "balance": "0.467583800117038432"
+                        },
+                        {
+                          "holderAddress": {
+                            "account": "0x1db995cb2b3d9679383f0e597704a41e1521f4e1"
+                          },
+                          "balance": "0.641380199330235549"
+                        }
+                      ]
+                    },
+                    {
+                      "tokenAddress": "0xf6b1117ec07684d3958cad8beb1b302bfd21103f",
+                      "tokenSymbol": "TSLAon",
+                      "balances": [
+                        {
+                          "holderAddress": {
+                            "account": "0x00000688768803bbd44095770895ad27ad6b0d95"
+                          },
+                          "balance": "0.030594824589372964"
+                        },
+                        {
+                          "holderAddress": {
+                            "account": "0x1db995cb2b3d9679383f0e597704a41e1521f4e1"
+                          },
+                          "balance": "0.088854297224463519"
+                        }
+                      ]
+                    },
+                    "..."
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/chains/{chainId}/tokens/{tokenAddress}/info": {
+      "get": {
+        "tags": [
+          "Chains"
+        ],
+        "summary": "Get Token Info",
+        "description": "This endpoint retrieves contract information about a token on a GM chain.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getTokenInfo",
+        "parameters": [
+          {
+            "name": "chainId",
+            "in": "path",
+            "description": "The chain's identifier including the chain name and chain id.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/GMChains"
+            }
+          },
+          {
+            "name": "tokenAddress",
+            "in": "path",
+            "description": "The token contract address",
+            "example": "0x14c3abF95Cb9C93a8b82C1CdCB76D72Cb87b2d4c",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetTokenInfoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/limits/trading": {
+      "get": {
+        "tags": [
+          "Limits"
+        ],
+        "summary": "Get Trading Limits",
+        "description": "Provides real-time trading limits based on global, user, and asset-specific exposure limits.\n\nLimits:\n- The \"Max Notional Value\" limit is based on the dollar value of outstanding attestations. That is, if a user has a limit of $1,000,000, and has 30 non-expired, non-filled attestations at a value of $999,000, they will not be able to request another attestation for $1000.\n- The \"Remaining Attestations\" limits the number of non-expired, non-executed attestations. For example if the limit is 50, and a user has 50 outstanding attestations, they must wait for one to execute or expire before requesting another.\n\nIf the market is closed or paused, the response will indicate that trading is not allowed and provide the reason. For more information on market hours, see the `/v1/status/market` endpoint.\n\n**Trading Limits Reason Codes**\n\nWhen trading is not allowed, the response will include a `reason` field which may include one of the following common codes:\n- `MARKET_CLOSED`: Market is closed.\n- `MARKET_PAUSED`: Market is temporarily paused.\n- `ASSET_PAUSED`: Specific asset is paused.\n- `ASSET_CLOSED_FOR_SESSION`: The asset is not tradable in this session (e.g., not available overnight; see [Get Market Data](https://ondo-finance.readme.io/reference/getallmarkets#/))\n- `ASSET_LIMITED`: Asset can be traded, but order size is more limited than usual.\n- `MAX_LIMIT_REACHED`: Maximum limit has been reached.\n- `MAX_ATTESTATIONS`: Maximum attestations reached.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getTradingLimits",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "description": "The GM token symbol.",
+            "example": "AAPLon",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "description": "The trade side",
+            "example": "buy",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SideEnum"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingLimitsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/limits/session": {
+      "get": {
+        "tags": [
+          "Limits"
+        ],
+        "summary": "Get Session Limits",
+        "description": "Provides theoretical maximum asset-specific trading limits for each trading session. These limits are per-user, not global. This API reflects Ondo's statically defined limits; for dynamic, real-time values, see [Get Trading Limits](https://ondo-finance.readme.io/reference/gettradinglimits))\n\nLimits:\n- The \"Max Attestation Count\" limits the number of non-expired, non-executed attestations. For example if the limit is 50, and a user has 50 outstanding attestations, they must wait for one to execute or expire before requesting another.\n- The \"Max Active Notional Value\" limit is based on the dollar value of outstanding attestations. That is, if a user has a limit of $1,000,000, and has 30 non-expired, non-filled attestations at a value of $999,000, they will not be able to request another attestation for $1000.\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getSessionLimits",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "description": "The GM token symbol.",
+            "example": "AAPLon",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionLimitsResponse"
+                },
+                "example": [
+                  {
+                    "limits": [
+                      {
+                        "symbol": "AAPLon",
+                        "premarket": {
+                          "tradable": true,
+                          "maxAttestationCount": "500",
+                          "maxActiveNotionalValue": "10000"
+                        },
+                        "regular": {
+                          "tradable": true,
+                          "maxAttestationCount": "500",
+                          "maxActiveNotionalValue": "200000"
+                        },
+                        "postmarket": {
+                          "tradable": true,
+                          "maxAttestationCount": "500",
+                          "maxActiveNotionalValue": "200000"
+                        },
+                        "overnight": {
+                          "tradable": true,
+                          "maxAttestationCount": "500",
+                          "maxActiveNotionalValue": "200000"
+                        }
+                      },
+                      "..."
+                    ],
+                    "timestamp": 1769192550134
+                  }
+                ]
+              }
+            }
+          },
+          "400": {
+            "description": "One of the request parameters is invalid. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "BAD_REQUEST",
+                      "message": "One of the request parameters is invalid.",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/status/market": {
+      "get": {
+        "tags": [
+          "Status"
+        ],
+        "summary": "Get Current Market Status",
+        "description": "This endpoint retrieves the current status of the market, including whether it is open or closed, and any relevant information about trading pauses or restrictions. When the market is not open, the response provides details about the closure reason and expected reopening time.\n\n**Typical Market Sessions**\n\nThe following table outlines the standard market sessions with brief transitional pauses between each session period.\n\n| **Session**      | **Start Time**  | **End Time**   |\n|:-----------------|:---------------:|:--------------:|\n| Pause            | 3:55 AM ET      | 4:01 AM ET     |\n| **Premarket**    | **4:01 AM ET**  | **9:29 AM ET** |\n| Pause            | 9:29 AM ET      | 9:31 AM ET     |\n| **Regular**      | **9:31 AM ET**  | **3:59 PM ET** |\n| Pause            | 3:59 PM ET      | 4:01 PM ET     |\n| **Postmarket**   | **4:01 PM ET**  | **7:59 PM ET** |\n| Pause            | 7:59 PM ET      | 8:05 PM ET     |\n| **Overnight**    | **8:05 PM ET**  | **3:55 AM ET** |\n\n**Typical Holidays**\n\nGM observes the same holiday schedule as the [New York Stock Exchange](https://www.nyse.com/markets/hours-calendars). This includes early closes and observed holidays.\n\n**Unscheduled Downtime**\n\nIn the case of unscheduled downtime, trading may be paused without prior notice. This includes unexpected outages or maintenance events that impact GM's functionality.\n\n**Market Status Reason Codes**\n\nWhen the market is not open, the response will include a `reason` field which may include one of the following common codes:\n- `MARKET_CLOSED`: Market is closed.\n- `MARKET_PAUSED`: Market is temporarily paused.\n\n**Asset Tradability**\nThis endpoint only returns market-wide closures. For per-asset tradability, use the following endpoints:\n  * Individual assets may pause for dividends and other events, as indicated by `/v1/status/assets`. (See [Get Asset Statuses](https://ondo-finance.readme.io/reference/getassetstatus))\n  * Certain assets do not trade during the overnight and pre/postmarket session, as indicated by `/v1/assets/{symbol}/market`. (See [Get Market Data for an Asset](https://ondo-finance.readme.io/reference/getmarket) / [Get Market Data for All Supported Assets](https://ondo-finance.readme.io/reference/getallmarkets))\n\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getMarketStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetMarketStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    },
+    "/v1/status/assets": {
+      "get": {
+        "tags": [
+          "Status"
+        ],
+        "summary": "Get Asset Statuses",
+        "description": "This endpoint retrieves information about individual asset trading statuses, including the reason and expected duration. Asset trading can be affected for various reasons such as earnings announcements, dividend events, and global market closures.\n\n**Important**:\n  * When the entire market is closed or paused as indicated by `/v1/status/market`, all asset trading is automatically suspended regardless of individual asset status. (See [Get Current Market Status](https://ondo-finance.readme.io/reference/getmarketstatus))\n  * Certain assets do not trade during the overnight and pre/postmarket session, as indicated by `/v1/assets/{symbol}/market`. (See [Get Market Data for an Asset](https://ondo-finance.readme.io/reference/getmarket) / [Get Market Data for All Supported Assets](https://ondo-finance.readme.io/reference/getallmarkets)) \n\n This endpoint should be used in conjunction with the [Market Status](https://ondo-finance.readme.io/reference/getmarketstatus) and [Market Data](https://ondo-finance.readme.io/reference/getmarket) endpoints to get a complete picture of trading availability.\n\n**Market Sessions and Holidays**\n\nAsset trading follows the same schedule as outlined in the `/v1/status/market` endpoint. During market closures, holidays, or unscheduled downtime, all assets are unavailable for trading.\n\n**Earnings and Dividends**\n\nIndividual assets may be temporarily suspended or limited during earnings announcements and dividend events according to the following schedule:\n- **Dividends**: Trading is paused from 7:50 PM to 8:10 PM ET on the day before the dividend ex-date.\n- **Earnings**: Trading is limited for certain assets around earnings announcements, with timing dependent on the announcement schedule. \"Limited\" here means that the quantity which can be minted in one request is reduced. For exact limits, see [Get Trading Limits](https://ondo-finance.readme.io/reference/gettradinglimits#/). For pre-market announcements, trading is suspended from 5:00 AM to 9:31 AM ET. For post-market announcements, trading is suspended from 4:00 PM to 7:30 PM ET. Trading may resume earlier at the platform's discretion.\n- **Other corporate actions**: Trading is paused for an indeterminate amount of time as needed for Ondo to process the corporate action.\n\n**Asset Status Reason Codes**\n\n`reason.code` is one of:\n- `ASSET_PAUSED`: Asset is paused for trading.\n- `ASSET_LIMITED`: Asset can be traded, but order size is more limited than usual.\n\n**Asset Status Reason Messages**\n\n`reason.message` is one of:\n- `cash_dividend`\n- `stock_dividend`\n- `stock_split`\n- `merger`\n- `acquisition`\n- `spinoff`\n- `earnings`\n- `maintenance`\n\nFor caching details on this endpoint, please see: [Endpoint Caching](https://ondo-finance.readme.io/reference/endpoint-caching#/).\n",
+        "operationId": "getAssetStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetAssetStatusesResponse"
+                },
+                "example": [
+                  {
+                    "symbol": "XOMon",
+                    "status": "upcoming",
+                    "type": "scheduled",
+                    "reason": {
+                      "code": "ASSET_LIMITED",
+                      "message": "earnings",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes#asset_limited"
+                    },
+                    "start": "2026-01-30T10:00:00Z",
+                    "end": "2026-01-31T00:30:00Z",
+                    "eventId": "30fd9cb4-1d64-474f-822d-7f281b8f02ee",
+                    "updateSharesMultiplier": false
+                  },
+                  {
+                    "symbol": "TIPon",
+                    "status": "upcoming",
+                    "type": "scheduled",
+                    "reason": {
+                      "code": "ASSET_PAUSED",
+                      "message": "cash_dividend",
+                      "documentation": "https://ondo-finance.readme.io/reference/error-codes#asset_paused"
+                    },
+                    "start": "2026-02-02T00:50:00Z",
+                    "end": "2026-02-03T01:00:00Z",
+                    "eventId": "d7d42fbe-9161-45af-806c-c0717453099d",
+                    "updateSharesMultiplier": true
+                  },
+                  "..."
+                ]
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key. Please provide your API key in the `x-api-key` request header.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "UNAUTHORIZED",
+                      "message": "Missing or invalid API key. Please provide your API key in the x-api-key request header."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Client is sending too many requests and exceeded the rate limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "RATE_LIMITED",
+                      "message": "Client is sending too many requests and exceeded the rate limit."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error occurred. Please see the returned message and documentation for details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "error": {
+                    "value": {
+                      "error": "INTERNAL_SERVER_ERROR",
+                      "message": "An internal server error occurred. Please see the returned message and documentation for details."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "apiKey": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "IntervalEnum": {
+        "type": "string",
+        "description": "The time interval between data points.",
+        "enum": [
+          "1min",
+          "5min",
+          "15min",
+          "1hour",
+          "4hour",
+          "12hour",
+          "1day"
+        ]
+      },
+      "RangeEnum": {
+        "type": "string",
+        "description": "The look back range for historical data. (Note that '1day' will return a rolling 24-hour period of data and 'all' will return all historical data.)",
+        "enum": [
+          "1day",
+          "1month",
+          "3month",
+          "6month",
+          "1year",
+          "all"
+        ]
+      },
+      "GMChains": {
+        "type": "string",
+        "description": "The chain's identifier including the chain name and chain id.",
+        "enum": [
+          "ethereum-1",
+          "bsc-56",
+          "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+        ]
+      },
+      "SideEnum": {
+        "type": "string",
+        "description": "The direction of the trade.",
+        "enum": [
+          "buy",
+          "sell"
+        ]
+      },
+      "AttestationDurationEnum": {
+        "type": "string",
+        "description": "Specifies the desired validity period for the attestation. Users can specify a duration of 'short' \nfor a tighter price spread or 'long' for an extended validity period.\n",
+        "enum": [
+          "short",
+          "long"
+        ]
+      },
+      "AttestationByTokenAmountRequest": {
+        "type": "object",
+        "description": "Request to mint or redeem a quantity of assets.",
+        "title": "AttestationByTokenAmountRequest",
+        "properties": {
+          "chainId": {
+            "$ref": "#/components/schemas/GMChains"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "AAPLon",
+            "description": "The GM token symbol."
+          },
+          "side": {
+            "$ref": "#/components/schemas/SideEnum"
+          },
+          "tokenAmount": {
+            "type": "string",
+            "description": "The number of tokens, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "5.000000000000000000"
+          },
+          "duration": {
+            "$ref": "#/components/schemas/AttestationDurationEnum"
+          },
+          "userAddress": {
+            "type": "string",
+            "description": "The Solana user address associated with the request. This is only required for Solana attestations.",
+            "example": "7YkSgYQ6x7uBv9E3n2Yh6mF5tQ1rZc8Lp4WsXjKd3Ha2"
+          }
+        },
+        "required": [
+          "chainId",
+          "symbol",
+          "side",
+          "tokenAmount"
+        ]
+      },
+      "AttestationByNotionalValueRequest": {
+        "type": "object",
+        "description": "Request to mint or redeem assets equal to the notional value.",
+        "title": "AttestationByNotionalValueRequest",
+        "properties": {
+          "chainId": {
+            "$ref": "#/components/schemas/GMChains"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "AAPLon",
+            "description": "The GM token symbol."
+          },
+          "side": {
+            "$ref": "#/components/schemas/SideEnum"
+          },
+          "notionalValue": {
+            "type": "string",
+            "description": "Total value of assets, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "500.000000000000000000"
+          },
+          "duration": {
+            "$ref": "#/components/schemas/AttestationDurationEnum"
+          },
+          "userAddress": {
+            "type": "string",
+            "description": "The Solana user address associated with the request. This is only required for Solana attestations.",
+            "example": "7YkSgYQ6x7uBv9E3n2Yh6mF5tQ1rZc8Lp4WsXjKd3Ha2"
+          }
+        },
+        "required": [
+          "chainId",
+          "symbol",
+          "side",
+          "notionalValue"
+        ]
+      },
+      "Attestation": {
+        "type": "object",
+        "properties": {
+          "attestationId": {
+            "type": "string",
+            "description": "The attestation's unique identifier.",
+            "example": "229852750420835981756873903928305653446"
+          },
+          "userId": {
+            "type": "string",
+            "description": "The onchain identifier for an association of wallets.",
+            "example": "0x474d0000000000009310097834e2c7af00000000000000000000000000000000"
+          },
+          "chainId": {
+            "type": "string",
+            "description": "The chain's identifier, only including the chain id.",
+            "example": "1"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "The GM token symbol.",
+            "example": "AAPLon"
+          },
+          "ticker": {
+            "type": "string",
+            "description": "The stock ticker associated with this attestation.",
+            "example": "AAPL"
+          },
+          "assetAddress": {
+            "type": "string",
+            "description": "The contract address of the symbol.",
+            "example": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "description": "The direction of the trade (0 for buy, 1 for sell).",
+            "example": "0"
+          },
+          "tokenAmount": {
+            "type": "string",
+            "description": "The number of tokens to mint/redeem represented as a string with 18 decimal places.",
+            "example": "5000000000000000000"
+          },
+          "price": {
+            "type": "string",
+            "description": "The price per asset in USDon, represented as a string with up to 18 decimal places.",
+            "example": "225273151158540753535"
+          },
+          "expiration": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The epoch timestamp when the attestation will expire.",
+            "example": 1746655938
+          },
+          "signature": {
+            "type": "string",
+            "description": "The signature attesting to the quote.",
+            "example": "kMecIrsGFdoAdxzRq2bPo07FWP2QyrxWfjrSMAdIZXNq3bXQnWx27aTKyt9fJiXWrzShYemxA/0RengNqNJ6bBs="
+          },
+          "additionalData": {
+            "type": "string",
+            "description": "Additional data to provide within the attestation.",
+            "example": ""
+          }
+        },
+        "required": [
+          "attestationId",
+          "userId",
+          "chainId",
+          "symbol",
+          "ticker",
+          "assetAddress",
+          "side",
+          "tokenAmount",
+          "price",
+          "expiration",
+          "signature",
+          "additionalData"
+        ]
+      },
+      "SoftQuoteByTokenAmountRequest": {
+        "type": "object",
+        "description": "Request a soft quote to mint or redeem a quantity of assets.",
+        "title": "AttestationByTokenAmountRequest",
+        "properties": {
+          "chainId": {
+            "$ref": "#/components/schemas/GMChains"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "AAPLon",
+            "description": "The GM token symbol."
+          },
+          "side": {
+            "$ref": "#/components/schemas/SideEnum"
+          },
+          "tokenAmount": {
+            "type": "string",
+            "description": "The number of tokens, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "5.000000000000000000"
+          },
+          "duration": {
+            "$ref": "#/components/schemas/AttestationDurationEnum"
+          }
+        },
+        "required": [
+          "chainId",
+          "symbol",
+          "side",
+          "tokenAmount"
+        ]
+      },
+      "SoftQuoteByNotionalValueRequest": {
+        "type": "object",
+        "description": "Request a soft quote to mint or redeem assets equal to the notional value.",
+        "title": "AttestationByNotionalValueRequest",
+        "properties": {
+          "chainId": {
+            "$ref": "#/components/schemas/GMChains"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "AAPLon",
+            "description": "The GM token symbol."
+          },
+          "side": {
+            "$ref": "#/components/schemas/SideEnum"
+          },
+          "notionalValue": {
+            "type": "string",
+            "description": "Total value of assets, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "500.000000000000000000"
+          },
+          "duration": {
+            "$ref": "#/components/schemas/AttestationDurationEnum"
+          }
+        },
+        "required": [
+          "chainId",
+          "symbol",
+          "side",
+          "notionalValue"
+        ]
+      },
+      "SoftQuote": {
+        "type": "object",
+        "properties": {
+          "chainId": {
+            "type": "string",
+            "description": "The chain's identifier, only including the chain id.",
+            "example": "1"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "The GM token symbol.",
+            "example": "AAPLon"
+          },
+          "ticker": {
+            "type": "string",
+            "description": "The stock ticker associated with this attestation.",
+            "example": "AAPL"
+          },
+          "assetAddress": {
+            "type": "string",
+            "description": "The contract address of the symbol.",
+            "example": "0x96F6eF951840721AdBF46Ac996b59E0235CB985C"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "0",
+              "1"
+            ],
+            "description": "The direction of the trade (0 for buy, 1 for sell)."
+          },
+          "tokenAmount": {
+            "type": "string",
+            "description": "The number of tokens to mint/redeem represented as a string with 18 decimal places.",
+            "example": "5000000000000000000"
+          },
+          "price": {
+            "type": "string",
+            "description": "The price per asset in usdon, represented as a string with 18 decimal places.",
+            "example": "225273151158540753535"
+          }
+        },
+        "required": [
+          "chainId",
+          "symbol",
+          "ticker",
+          "assetAddress",
+          "side",
+          "tokenAmount",
+          "price"
+        ]
+      },
+      "TickerResponse": {
+        "type": "object",
+        "properties": {
+          "tickerId": {
+            "type": "string",
+            "description": "The identifier of a ticker, formatted as `<base>_<target>`.",
+            "example": "aaplon_usdon"
+          },
+          "baseCurrency": {
+            "type": "string",
+            "description": "The GM symbol of the base asset.",
+            "example": "AAPLon"
+          },
+          "targetCurrency": {
+            "type": "string",
+            "description": "The GM symbol of the target asset.",
+            "example": "USDon"
+          },
+          "lastPrice": {
+            "type": "number",
+            "description": "The last transacted price of base currency based on given target currency.",
+            "example": 12.34
+          },
+          "baseVolume": {
+            "type": "number",
+            "description": "The 24 hour trading volume for the pair (unit in base).",
+            "example": 100.0
+          },
+          "targetVolume": {
+            "type": "number",
+            "description": "The 24 hour trading volume for the pair (unit in target).",
+            "example": 250.0
+          }
+        },
+        "required": [
+          "tickerId",
+          "baseCurrency",
+          "targetCurrency",
+          "lastPrice",
+          "baseVolume",
+          "targetVolume"
+        ]
+      },
+      "AssetPrice": {
+        "type": "object",
+        "properties": {
+          "primaryMarket": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string",
+                "description": "The GM symbol of the asset.",
+                "example": "AAPLon"
+              },
+              "price": {
+                "type": "string",
+                "description": "The token price, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "12.345"
+              }
+            }
+          },
+          "underlyingMarket": {
+            "type": "object",
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "The stock ticker associated with the asset.",
+                "example": "AAPL"
+              },
+              "price": {
+                "type": "string",
+                "description": "The stock price, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "12.345"
+              }
+            }
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds, representing the time of the price data retrieval.",
+            "example": 1746655938
+          }
+        },
+        "required": [
+          "primaryMarket",
+          "underlyingMarket",
+          "timestamp"
+        ]
+      },
+      "AssetEnhancedPrice": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The GM symbol of the asset.",
+            "example": "NFLXon"
+          },
+          "price": {
+            "type": "string",
+            "description": "The token price, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "836.26176"
+          },
+          "priceChange24h": {
+            "type": "string",
+            "description": "The price change in the last 24 hours of open market.",
+            "example": "-19.22815"
+          },
+          "priceChangePct24h": {
+            "type": "string",
+            "description": "The percentage change in price over the last 24 hours of open market.",
+            "example": "-2.247618560457364132"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the data was last updated.",
+            "example": 1769125830623
+          }
+        },
+        "required": [
+          "symbol",
+          "price",
+          "priceChange24h",
+          "priceChangePct24h",
+          "timestamp"
+        ]
+      },
+      "Market": {
+        "type": "object",
+        "properties": {
+          "primaryMarket": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string",
+                "description": "The GM symbol of the asset.",
+                "example": "AAPLon"
+              },
+              "price": {
+                "type": "string",
+                "description": "The current price of the asset, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "12.345"
+              },
+              "priceChange24h": {
+                "type": "string",
+                "description": "The price change in the last 24 hours of open market.",
+                "example": "0.123"
+              },
+              "priceChangePct24h": {
+                "type": "string",
+                "description": "The percentage change in price over the last 24 hours of open market.",
+                "example": "5.45"
+              },
+              "priceHistory24h": {
+                "type": "array",
+                "description": "Historical price data for the last 24 hours of open market.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "timestamp": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "The Unix timestamp in milliseconds, representing the time of the price data point.",
+                      "example": 1746655938000
+                    },
+                    "price": {
+                      "type": "string",
+                      "description": "The closing price of the token for the interval.",
+                      "example": "12.345678901234567890"
+                    }
+                  }
+                }
+              },
+              "totalHolders": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The total number of holders for the asset",
+                "example": 1234
+              },
+              "sharesMultiplier": {
+                "type": "string",
+                "description": "The number of shares each token is equivalent to, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "1.25"
+              }
+            }
+          },
+          "underlyingMarket": {
+            "type": "object",
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "The stock ticker associated with the asset.",
+                "example": "AAPL"
+              },
+              "name": {
+                "type": "string",
+                "description": "The company's name.",
+                "example": "Apple Inc"
+              },
+              "price": {
+                "type": "string",
+                "description": "The current price of the underlying stock, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "195.34"
+              },
+              "priceHigh52w": {
+                "type": "string",
+                "description": "The highest trading price in the past 52 weeks, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "259.47"
+              },
+              "priceLow52w": {
+                "type": "string",
+                "description": "The lowest trading price in the past 52 weeks, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+                "example": "168.99"
+              },
+              "volume": {
+                "type": "string",
+                "description": "The total trading volume in the past 24 hours, represented as a string-encoded integer.",
+                "example": "43020691"
+              },
+              "averageVolume": {
+                "type": "string",
+                "description": "The average trading volume over the past year, represented as a string-encoded integer.",
+                "example": "38390632"
+              },
+              "sharesOutstanding": {
+                "type": "string",
+                "description": "The total number of shares outstanding, represented as a string-encoded integer.",
+                "example": "14935800000"
+              },
+              "marketCap": {
+                "type": "string",
+                "description": "The total market capitalization in USD, represented as a string-encoded integer.",
+                "example": "2934137946000"
+              }
+            }
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the data was last updated.",
+            "example": 1746655938000
+          }
+        },
+        "required": [
+          "primaryMarket",
+          "underlyingMarket",
+          "timestamp"
+        ]
+      },
+      "OHLCDataPoint": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the data point was recorded.",
+            "example": 1746655938000
+          },
+          "open": {
+            "type": "string",
+            "description": "The opening price for the interval, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "10.000000000000000000"
+          },
+          "high": {
+            "type": "string",
+            "description": "The highest price during the interval, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "12.500000000000000000"
+          },
+          "low": {
+            "type": "string",
+            "description": "The lowest price during the interval, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "8.500000000000000000"
+          },
+          "close": {
+            "type": "string",
+            "description": "The closing price for the interval, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "9.000000000000000000"
+          }
+        },
+        "required": [
+          "timestamp",
+          "open",
+          "high",
+          "low",
+          "close"
+        ]
+      },
+      "OHLCResponse": {
+        "type": "object",
+        "properties": {
+          "interval": {
+            "$ref": "#/components/schemas/IntervalEnum"
+          },
+          "range": {
+            "$ref": "#/components/schemas/RangeEnum"
+          },
+          "primaryMarket": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string",
+                "description": "The GM symbol associated with the asset.",
+                "example": "AAPLon"
+              },
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OHLCDataPoint"
+                }
+              }
+            }
+          },
+          "underlyingMarket": {
+            "type": "object",
+            "properties": {
+              "ticker": {
+                "type": "string",
+                "description": "The stock ticker associated with the asset.",
+                "example": "AAPL"
+              },
+              "data": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/OHLCDataPoint"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "interval",
+          "primaryMarket",
+          "underlyingMarket"
+        ]
+      },
+      "SharesMultiplierDataPoint": {
+        "type": "object",
+        "properties": {
+          "sharesMultiplier": {
+            "type": "string",
+            "description": "The number of shares each token is equivalent to, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "1.25"
+          },
+          "changeTimestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when this `sharesMultiplier` value was first set.",
+            "example": 1746655938000
+          }
+        },
+        "required": [
+          "sharesMultiplier",
+          "changeTimestamp"
+        ]
+      },
+      "SharesMultiplierResponse": {
+        "type": "object",
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharesMultiplierDataPoint"
+            }
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the data point was recorded.",
+            "example": 1746655938000
+          }
+        },
+        "required": [
+          "history",
+          "timestamp"
+        ]
+      },
+      "DividendInfo": {
+        "type": "object",
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "The stock ticker associated with the asset.",
+            "example": "AAPL"
+          },
+          "dividendYield": {
+            "type": "string",
+            "description": "The dividend yield, represented as a string-encoded decimal with up to 18 digits after the decimal point. (\"0.05\" is the equivalent of 5%)",
+            "example": "0.0245"
+          },
+          "payoutFrequency": {
+            "type": "string",
+            "description": "The frequency at which dividends are paid to shareholders.",
+            "enum": [
+              "monthly",
+              "quarterly",
+              "semi-annually",
+              "annually",
+              "irregular",
+              "none"
+            ],
+            "example": "quarterly"
+          },
+          "lastCashAmount": {
+            "type": "string",
+            "description": "The last dividend payment amount per share, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "1.54"
+          },
+          "lastPaymentDate": {
+            "type": "string",
+            "format": "date",
+            "description": "The date of last dividend payment in YYYY-MM-DD format.",
+            "example": "2025-02-15"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the data was last updated.",
+            "example": 1746655938000
+          }
+        },
+        "required": [
+          "ticker",
+          "dividendYield",
+          "payoutFrequency",
+          "lastCashAmount",
+          "lastPaymentDate",
+          "timestamp"
+        ]
+      },
+      "SymbolAssetAddresses": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The GM symbol associated with the asset.",
+            "example": "AAPLon"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetAddress"
+            }
+          }
+        },
+        "required": [
+          "symbol",
+          "addresses"
+        ]
+      },
+      "AssetAddress": {
+        "type": "object",
+        "properties": {
+          "networkChainId": {
+            "$ref": "#/components/schemas/GMChains"
+          },
+          "address": {
+            "type": "string",
+            "description": "The contract address on the specified chain.",
+            "example": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c"
+          },
+          "decimals": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The number of decimals places for the asset.",
+            "example": 18
+          }
+        },
+        "required": [
+          "networkChainId",
+          "address",
+          "decimals"
+        ]
+      },
+      "Pagination": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "The current limit applied to the request.",
+            "example": 10
+          },
+          "offset": {
+            "type": "integer",
+            "description": "The current offset in the collection.",
+            "example": 50
+          },
+          "count": {
+            "type": "integer",
+            "description": "The number of items returned in the response.",
+            "example": 7
+          },
+          "total": {
+            "type": "integer",
+            "description": "The total number of items available.",
+            "example": 57
+          }
+        },
+        "required": [
+          "limit",
+          "offset",
+          "count",
+          "total"
+        ]
+      },
+      "ChainToken": {
+        "type": "object",
+        "properties": {
+          "tokenAddress": {
+            "type": "string",
+            "description": "The contract address of the token on the specified chain."
+          },
+          "tokenSymbol": {
+            "type": "string",
+            "description": "The symbol of the token on the specified chain."
+          },
+          "balances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChainBalance"
+            }
+          }
+        },
+        "required": [
+          "tokenAddress",
+          "tokenSymbol",
+          "balances"
+        ]
+      },
+      "ChainBalance": {
+        "type": "object",
+        "properties": {
+          "holderAddress": {
+            "$ref": "#/components/schemas/ChainHolderAddress"
+          },
+          "balance": {
+            "type": "string",
+            "description": "The token balanced, represented as a string-encoded decimal with up to 18 digits after the decimal point."
+          }
+        },
+        "required": [
+          "holderAddress",
+          "balance"
+        ]
+      },
+      "ChainHolderAddress": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "The address of the holder account."
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "GetTokenInfoResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "$ref": "#/components/schemas/ChainTokenInfo"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "example": {
+          "token": {
+            "tokenAddress": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+            "tokenName": "Apple (Ondo Tokenized)",
+            "tokenSymbol": "AAPLon",
+            "tokenDecimals": 18,
+            "tokenSupply": {
+              "value": "72.428346190773568025"
+            }
+          }
+        }
+      },
+      "ChainTokenInfo": {
+        "type": "object",
+        "properties": {
+          "tokenAddress": {
+            "type": "string",
+            "description": "The address of the token contract."
+          },
+          "tokenName": {
+            "type": "string",
+            "description": "The name of the token."
+          },
+          "tokenSymbol": {
+            "type": "string",
+            "description": "The symbol of the token."
+          },
+          "tokenDecimals": {
+            "type": "integer",
+            "description": "The number of decimal places the token can be divided into."
+          },
+          "tokenSupply": {
+            "$ref": "#/components/schemas/ChainTokenSupply"
+          }
+        },
+        "required": [
+          "tokenAddress",
+          "tokenName",
+          "tokenSymbol",
+          "tokenDecimals",
+          "tokenSupply"
+        ]
+      },
+      "ChainTokenSupply": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The total supply of the token, represented as a string with 18 decimal places."
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "SessionLimits": {
+        "type": "object",
+        "properties": {
+          "tradable": {
+            "type": "boolean",
+            "description": "A flag indicating whether trading is enabled during the session.",
+            "enum": [
+              true,
+              false
+            ],
+            "example": true
+          },
+          "maxAttestationCount": {
+            "type": "string",
+            "description": "The maximum number of active attestations allowed during the session.",
+            "example": "1000"
+          },
+          "maxActiveNotionalValue": {
+            "type": "string",
+            "description": "The maximum active notional value available to trade during the session, represented as a string-encoded integer.",
+            "example": "1000000"
+          }
+        },
+        "required": [
+          "tradable",
+          "maxAttestationCount",
+          "maxActiveNotionalValue"
+        ]
+      },
+      "AssetLimits": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The GM token symbol.",
+            "example": "AAPLon"
+          },
+          "premarket": {
+            "$ref": "#/components/schemas/SessionLimits"
+          },
+          "regular": {
+            "$ref": "#/components/schemas/SessionLimits"
+          },
+          "postmarket": {
+            "$ref": "#/components/schemas/SessionLimits"
+          },
+          "overnight": {
+            "$ref": "#/components/schemas/SessionLimits"
+          }
+        },
+        "required": [
+          "symbol",
+          "premarket",
+          "regular",
+          "postmarket",
+          "overnight"
+        ]
+      },
+      "SessionLimitsResponse": {
+        "type": "object",
+        "properties": {
+          "limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetLimits"
+            }
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the trading limits were last updated.",
+            "example": 1769116067536
+          }
+        },
+        "required": [
+          "limits",
+          "timestamp"
+        ]
+      },
+      "TradingLimitsResponse": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The Unix timestamp in milliseconds when the trading limits were last updated.",
+            "example": 1746655938000
+          },
+          "userId": {
+            "type": "string",
+            "description": "The unique identifier of the user.",
+            "example": "user-123"
+          },
+          "symbol": {
+            "type": "string",
+            "description": "The GM token symbol.",
+            "example": "AAPLon"
+          },
+          "side": {
+            "$ref": "#/components/schemas/SideEnum"
+          },
+          "maxTokens": {
+            "type": "string",
+            "description": "The maximum token amount available to trade, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "100.000000000000000000"
+          },
+          "maxNotionalValue": {
+            "type": "string",
+            "description": "The maximum notional value available to trade, represented as a string-encoded decimal with up to 18 digits after the decimal point.",
+            "example": "1234.560000000000000000"
+          },
+          "remainingAttestations": {
+            "type": "string",
+            "description": "The number of remaining attestations for this asset.",
+            "example": "3"
+          },
+          "isAssetTradingOpen": {
+            "type": "boolean",
+            "description": "Indicates whether the user is currently allowed to trade the asset",
+            "example": false
+          },
+          "reason": {
+            "$ref": "#/components/schemas/TradingLimitsReason"
+          }
+        },
+        "required": [
+          "timestamp",
+          "userId",
+          "symbol",
+          "side",
+          "maxTokens",
+          "maxNotionalValue",
+          "remainingAttestations",
+          "isAssetTradingOpen"
+        ]
+      },
+      "GetMarketStatusResponse": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "The UTC timestamp of the market status check in ISO 8601 format.",
+            "example": "2025-08-20T21:03:02Z"
+          },
+          "isOpen": {
+            "type": "boolean",
+            "description": "Indicates whether the market is currently open or closed to trading.",
+            "example": true
+          },
+          "marketStatus": {
+            "type": "string",
+            "description": "The current status of the market.",
+            "enum": [
+              "regular",
+              "premarket",
+              "postmarket",
+              "overnight",
+              "paused",
+              "closed"
+            ],
+            "example": "postmarket"
+          },
+          "nextOpenSession": {
+            "type": "string",
+            "description": "The next market open session of the market.",
+            "enum": [
+              "regular",
+              "premarket",
+              "postmarket",
+              "overnight"
+            ],
+            "example": "overnight"
+          },
+          "nextOpen": {
+            "type": "string",
+            "description": "The next market open time in ISO 8601 format (UTC).",
+            "example": "2025-08-21T00:05:00Z"
+          },
+          "nextClose": {
+            "type": "string",
+            "description": "The next market close time in ISO 8601 format (UTC).",
+            "example": "2025-08-20T23:59:00Z"
+          },
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MarketStatusReason"
+              },
+              {
+                "example": null
+              }
+            ]
+          }
+        },
+        "required": [
+          "timestamp",
+          "isOpen",
+          "marketStatus",
+          "nextOpenSession"
+        ]
+      },
+      "GetAssetStatusesResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AssetPause"
+        }
+      },
+      "AssetPause": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The GM token symbol.",
+            "example": "AAPLon"
+          },
+          "status": {
+            "type": "string",
+            "description": "The current status of the pause. ('active' indicates the pause is live, 'upcoming' indicates it is scheduled for the future)",
+            "enum": [
+              "active",
+              "upcoming"
+            ],
+            "example": "active"
+          },
+          "type": {
+            "type": "string",
+            "description": "The type of pause. ('scheduled' indicates a planned pause for events such as dividends, 'unscheduled' indicates an unplanned pause such as emergency maintenance)",
+            "enum": [
+              "scheduled",
+              "unscheduled"
+            ],
+            "example": "unscheduled"
+          },
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AssetStatusReason"
+              },
+              {
+                "example": {
+                  "code": "ASSET_PAUSED",
+                  "message": "Maintenance",
+                  "documentation": "https://ondo-finance.readme.io/"
+                }
+              }
+            ]
+          },
+          "start": {
+            "type": "string",
+            "description": "The start time of the pause. ('unscheduled' pauses may not provide a start time.)",
+            "example": "2025-08-05T10:30:00Z"
+          },
+          "end": {
+            "type": "string",
+            "description": "The end time of the pause. ('unscheduled' pauses may not provide an end time.)",
+            "example": "2025-08-05T10:45:00Z"
+          },
+          "eventId": {
+            "type": "string",
+            "description": "The unique id associated with the pause. (Might be empty if the sharesMultiplier will not be updated for the asset during the pause.)",
+            "example": "94fe2f8f-e69c-45a5-9e48-dd8226dd8e67"
+          },
+          "updateSharesMultiplier": {
+            "type": "boolean",
+            "description": "A boolean flag that indicates whether the sharesMultiplier value will be updated for the asset during this pause or not.",
+            "enum": [
+              true,
+              false
+            ],
+            "example": true
+          }
+        },
+        "required": [
+          "symbol",
+          "status",
+          "type"
+        ]
+      },
+      "ReasonBase": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "The human-readable message describing the reason",
+            "example": "Weekend/Holiday"
+          },
+          "documentation": {
+            "type": "string",
+            "description": "Additional documentation or reference",
+            "example": "https://ondo-finance.readme.io/"
+          }
+        },
+        "required": [
+          "message",
+          "documentation"
+        ]
+      },
+      "MarketStatusReason": {
+        "description": "Reason for market closure or pause.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReasonBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/MarketStatusReasonCode"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          }
+        ]
+      },
+      "MarketStatusReasonCode": {
+        "type": "string",
+        "enum": [
+          "MARKET_CLOSED",
+          "MARKET_PAUSED"
+        ],
+        "description": "The code indicating the reason for the market status."
+      },
+      "AssetStatusReason": {
+        "description": "Reason for an asset trading restriction.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReasonBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/AssetStatusReasonCode"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          }
+        ]
+      },
+      "AssetStatusReasonCode": {
+        "type": "string",
+        "enum": [
+          "ASSET_PAUSED",
+          "ASSET_LIMITED"
+        ],
+        "description": "The code indicating the reason for the asset status."
+      },
+      "TradingLimitsReason": {
+        "description": "Reason why trading is restricted for the given asset and user.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReasonBase"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/TradingLimitsReasonCode"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          }
+        ]
+      },
+      "TradingLimitsReasonCode": {
+        "type": "string",
+        "enum": [
+          "MARKET_CLOSED",
+          "MARKET_PAUSED",
+          "ASSET_PAUSED",
+          "ASSET_CLOSED_FOR_SESSION",
+          "ASSET_LIMITED",
+          "MAX_LIMIT_REACHED",
+          "MAX_ATTESTATIONS"
+        ],
+        "description": "The code indicating why trading is not allowed."
+      },
+      "MetadataEntry": {
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "example": "AAPLon"
+          },
+          "ticker": {
+            "type": "string",
+            "example": "AAPL"
+          },
+          "coingeckoId": {
+            "type": "string",
+            "nullable": true,
+            "example": "apple-ondo-tokenized-stock"
+          },
+          "coinmarketCapId": {
+            "type": "string",
+            "nullable": true,
+            "example": "38037"
+          },
+          "addresses": {
+            "type": "object",
+            "description": "Contract addresses for various chains",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "example": [
+              {
+                "networkChainId": "bsc-56",
+                "address": "0x390a684ef9cade28a7ad0dfa61ab1eb3842618c4",
+                "decimals": 18
+              },
+              {
+                "networkChainId": "ethereum-1",
+                "address": "0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c",
+                "decimals": 18
+              }
+            ]
+          },
+          "tags": {
+            "type": "object",
+            "properties": {
+              "assetClass": {
+                "type": "string",
+                "description": "High-level category of the asset",
+                "example": "equities"
+              },
+              "instrumentType": {
+                "type": "string",
+                "description": "Instrument type within the asset class",
+                "example": "stock"
+              }
+            },
+            "required": [
+              "assetClass",
+              "instrumentType"
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "ticker",
+          "tags"
+        ]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A short error code identifying the type of error."
+          },
+          "message": {
+            "type": "string",
+            "description": "A human-readable message providing more details about the error."
+          },
+          "documentation": {
+            "type": "string",
+            "description": "A URL to the relevant documentation for this error."
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "name": "x-api-key",
+        "in": "header"
+      }
+    }
+  }
+}

@@ -1,0 +1,2795 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Ondo Perps WebSocket API",
+    "version": "1.0",
+    "description": "WebSocket API for Ondo Perps: real-time market data, order updates, positions, balance, funding, and more.\n\n## Connection\n\nConnect via `wss://api.ondoperps.xyz/ws`. The server enforces a 32 KB max message size and a rate limit of 25 requests/second (burst 50).\n\n## Authentication\n\nPublic channels (market data) require no authentication. Private channels (orders, fills, positions, balance, etc.) require a `login` message first.\n\n### JWT Login\n```json\n{\"op\": \"login\", \"args\": {\"token\": \"<JWT>\"}}\n```\n\n### API Key Login\n```json\n{\"op\": \"login\", \"args\": {\"key\": \"<api_key_id>\", \"time\": \"<unix_ms>\", \"sign\": \"<hex_hmac>\"}}\n```\n\nSignature: `HMAC-SHA256(api_secret, \"ondo_perps_ws_login\" + time)`\n\n## Heartbeat\n\nSend `{\"op\": \"ping\"}` periodically. The server responds with `{\"type\": \"pong\"}`. Connections idle for 180 seconds are closed.\n\n## Message Format\n\n### Client → Server\nAll client messages use the `op` field: `ping`, `login`, `subscribe`, `unsubscribe`, `sendMessage`.\n\n### Server → Client\nAll server messages use the `type` field: `pong`, `loggedIn`, `subscribed`, `unsubscribed`, `update`, `error`.\nChannel data updates arrive as `{\"type\": \"update\", \"channel\": \"<name>\", \"data\": <payload>}`."
+  },
+  "servers": [
+    {
+      "url": "wss://api.ondoperps.xyz",
+      "description": "Production"
+    }
+  ],
+  "paths": {
+    "/ws/topOfBooksPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Top of Book",
+        "operationId": "subscribe_topOfBooksPerps",
+        "description": "Subscribe to the `topOfBooksPerps` channel.\n\nOptional `markets` to filter; omit for all markets.",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "topOfBooksPerps"
+                    ],
+                    "example": "topOfBooksPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "topOfBooksPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `topOfBooksPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "topOfBooksPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BookSnapshot"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "topOfBooksPerps",
+                  "data": [
+                    {
+                      "market": "AAPL-USD.P",
+                      "time": "2025-03-05T14:30:00Z",
+                      "asks": [
+                        [
+                          "227.60",
+                          "80.0"
+                        ]
+                      ],
+                      "bids": [
+                        [
+                          "227.40",
+                          "100.0"
+                        ]
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/depthBooksPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Depth Book",
+        "operationId": "subscribe_depthBooksPerps",
+        "description": "Subscribe to the `depthBooksPerps` channel.\n\nOptional `markets`, `depthLevels` (price grouping), and `limit` (max levels).",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "depthBooksPerps"
+                    ],
+                    "example": "depthBooksPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  },
+                  "depthLevels": {
+                    "type": "string",
+                    "example": "0.01",
+                    "description": "Price grouping level for the depth book."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "example": 20,
+                    "description": "Maximum depth levels to return; 0 for unlimited."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "depthBooksPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ],
+                "depthLevels": "0.01",
+                "limit": 20
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `depthBooksPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "depthBooksPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BookSnapshot"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/tradesPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Trades",
+        "operationId": "subscribe_tradesPerps",
+        "description": "Subscribe to the `tradesPerps` channel.\n\nOptional `markets` and `numPastTrades` (number of historical trades on subscribe).",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "tradesPerps"
+                    ],
+                    "example": "tradesPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  },
+                  "numPastTrades": {
+                    "type": "integer",
+                    "example": 50,
+                    "description": "Number of historical trades to receive on subscribe."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "tradesPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ],
+                "numPastTrades": 50
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `tradesPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "tradesPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Trade"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "tradesPerps",
+                  "data": [
+                    {
+                      "market": "AAPL-USD.P",
+                      "price": "227.50",
+                      "size": "5.00",
+                      "cost": "1137.50",
+                      "aggressor_side": "buy",
+                      "time": "2025-03-05T14:30:00Z",
+                      "id": "70a37d8f972f2494837f9dba8364cbb4"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/fundingRatesPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Funding Rates",
+        "operationId": "subscribe_fundingRatesPerps",
+        "description": "Subscribe to the `fundingRatesPerps` channel.\n\nOptional `markets` to filter.",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "fundingRatesPerps"
+                    ],
+                    "example": "fundingRatesPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "fundingRatesPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `fundingRatesPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "fundingRatesPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/FundingRate"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/markPricesPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Mark Prices",
+        "operationId": "subscribe_markPricesPerps",
+        "description": "Subscribe to the `markPricesPerps` channel.\n\nOptional `markets` to filter.",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "markPricesPerps"
+                    ],
+                    "example": "markPricesPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "markPricesPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `markPricesPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "markPricesPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MarkPrice"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "markPricesPerps",
+                  "data": [
+                    {
+                      "market": "AAPL-USD.P",
+                      "markPrice": "227.50"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/liquidationAnnouncementsPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Liquidation Announcements",
+        "operationId": "subscribe_liquidationAnnouncementsPerps",
+        "description": "Subscribe to the `liquidationAnnouncementsPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "liquidationAnnouncementsPerps"
+                    ],
+                    "example": "liquidationAnnouncementsPerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "liquidationAnnouncementsPerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `liquidationAnnouncementsPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "liquidationAnnouncementsPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/LiquidationAnnouncement"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/kLinePerps": {
+      "post": {
+        "summary": "Subscribe: Perps Kline / Candlesticks",
+        "operationId": "subscribe_kLinePerps",
+        "description": "Subscribe to the `kLinePerps` channel.\n\n**Required**: exactly one `markets` entry and a `resolution`.\n\nValid resolutions: `1`, `5`, `15`, `1H`, `4H`, `1D`, `1W`.",
+        "tags": [
+          "Public Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel",
+                  "markets",
+                  "resolution"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "kLinePerps"
+                    ],
+                    "example": "kLinePerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Market to subscribe to. Exactly one market is required."
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "enum": [
+                      "1",
+                      "5",
+                      "15",
+                      "1H",
+                      "4H",
+                      "1D",
+                      "1W"
+                    ],
+                    "example": "1H",
+                    "description": "Kline resolution."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "kLinePerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ],
+                "resolution": "1H"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `kLinePerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "kLinePerps"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Kline"
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "kLinePerps",
+                  "data": {
+                    "m": "AAPL-USD.P",
+                    "t": 1709648400,
+                    "s": 1709648340,
+                    "e": 1709648400,
+                    "o": 226.8,
+                    "h": 228.1,
+                    "l": 226.5,
+                    "c": 227.5,
+                    "v": 12345.67,
+                    "x": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/ordersPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Orders",
+        "operationId": "subscribe_ordersPerps",
+        "description": "Subscribe to the `ordersPerps` channel. Requires authentication (login first).\n\nOptional `markets` to filter.",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "ordersPerps"
+                    ],
+                    "example": "ordersPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "ordersPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `ordersPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "ordersPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "ordersPerps",
+                  "data": [
+                    {
+                      "orderId": "197ec08e001658690721be129e7fa595",
+                      "side": "buy",
+                      "price": "227.50",
+                      "size": "10.00",
+                      "market": "AAPL-USD.P",
+                      "filledSize": "0.00",
+                      "filledCost": "0.00",
+                      "fee": "0.00",
+                      "status": "open",
+                      "createdAt": "2025-03-05T14:30:00Z",
+                      "type": "limit",
+                      "timeInForce": "GTC"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/fillsPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Fills",
+        "operationId": "subscribe_fillsPerps",
+        "description": "Subscribe to the `fillsPerps` channel. Requires authentication (login first).\n\nOptional `markets` to filter.",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "fillsPerps"
+                    ],
+                    "example": "fillsPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to filter by. Optional; if omitted, all available markets are used."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "fillsPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `fillsPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "fillsPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Fill"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/positionsPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Positions",
+        "operationId": "subscribe_positionsPerps",
+        "description": "Subscribe to the `positionsPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "positionsPerps"
+                    ],
+                    "example": "positionsPerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "positionsPerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `positionsPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "positionsPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Position"
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "positionsPerps",
+                  "data": [
+                    {
+                      "market": "AAPL-USD.P",
+                      "direction": "long",
+                      "netQuantity": "10.00",
+                      "averageEntryPrice": "225.00",
+                      "usedMargin": "1125.00",
+                      "unrealizedPnl": "25.00",
+                      "markPrice": "227.50",
+                      "liquidationPrice": "180.00",
+                      "bankruptcyPrice": "170.00",
+                      "maintenanceMargin": "112.50",
+                      "notionalValue": "2275.00",
+                      "leverage": "2.0",
+                      "netFundingSinceNeutral": "-1.23",
+                      "returnOnEquity": "0.022"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/balancePerps": {
+      "post": {
+        "summary": "Subscribe: Perps Balance",
+        "operationId": "subscribe_balancePerps",
+        "description": "Subscribe to the `balancePerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "balancePerps"
+                    ],
+                    "example": "balancePerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "balancePerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `balancePerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "balancePerps"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Balance"
+                    }
+                  }
+                },
+                "example": {
+                  "type": "update",
+                  "channel": "balancePerps",
+                  "data": {
+                    "walletBalance": "5000.00",
+                    "realizedPnl": "250.00",
+                    "unrealizedPnl": "-50.00",
+                    "marginBalance": "4950.00",
+                    "usedMargin": "1125.00"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/liquidationPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Liquidation",
+        "operationId": "subscribe_liquidationPerps",
+        "description": "Subscribe to the `liquidationPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "liquidationPerps"
+                    ],
+                    "example": "liquidationPerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "liquidationPerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `liquidationPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "liquidationPerps"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/LiquidationEvent"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/marginTransfersPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Margin Transfers",
+        "operationId": "subscribe_marginTransfersPerps",
+        "description": "Subscribe to the `marginTransfersPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "marginTransfersPerps"
+                    ],
+                    "example": "marginTransfersPerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "marginTransfersPerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `marginTransfersPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "marginTransfersPerps"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/MarginTransfer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/ordersSummariesPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Order Summaries",
+        "operationId": "subscribe_ordersSummariesPerps",
+        "description": "Subscribe to the `ordersSummariesPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel",
+                  "markets"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "ordersSummariesPerps"
+                    ],
+                    "example": "ordersSummariesPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "markets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "NVDA-USD.P"
+                    ],
+                    "description": "Markets to subscribe to. At least one market is required."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "ordersSummariesPerps",
+                "markets": [
+                  "NVDA-USD.P"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `ordersSummariesPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "ordersSummariesPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OrdersSummary"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/fundingPaymentsPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Funding Payments",
+        "operationId": "subscribe_fundingPaymentsPerps",
+        "description": "Subscribe to the `fundingPaymentsPerps` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "fundingPaymentsPerps"
+                    ],
+                    "example": "fundingPaymentsPerps",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "fundingPaymentsPerps"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `fundingPaymentsPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "fundingPaymentsPerps"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/FundingPayment"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/cancelAllOrdersAfterPerps": {
+      "post": {
+        "summary": "Subscribe: Perps Dead Man's Switch",
+        "operationId": "subscribe_cancelAllOrdersAfterPerps",
+        "description": "Subscribe to the `cancelAllOrdersAfterPerps` channel. Requires authentication (login first).\n\n**Required**: `timeout_seconds` (the dead man's switch duration in seconds).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel",
+                  "timeout_seconds"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "cancelAllOrdersAfterPerps"
+                    ],
+                    "example": "cancelAllOrdersAfterPerps",
+                    "description": "Channel for this subscription."
+                  },
+                  "timeout_seconds": {
+                    "type": "integer",
+                    "example": 30,
+                    "description": "Dead man's switch timeout, in seconds. All resting orders are cancelled if no further heartbeat is received within this window."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "cancelAllOrdersAfterPerps",
+                "timeout_seconds": 30
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `cancelAllOrdersAfterPerps`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "cancelAllOrdersAfterPerps"
+                      ]
+                    },
+                    "data": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/deposits": {
+      "post": {
+        "summary": "Subscribe: Deposits",
+        "operationId": "subscribe_deposits",
+        "description": "Subscribe to the `deposits` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "deposits"
+                    ],
+                    "example": "deposits",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "deposits"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `deposits`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "deposits"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Deposit"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/withdrawals": {
+      "post": {
+        "summary": "Subscribe: Withdrawals",
+        "operationId": "subscribe_withdrawals",
+        "description": "Subscribe to the `withdrawals` channel. Requires authentication (login first).",
+        "tags": [
+          "Private Channels"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "channel"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "subscribe",
+                      "unsubscribe"
+                    ],
+                    "example": "subscribe",
+                    "description": "Operation type."
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "withdrawals"
+                    ],
+                    "example": "withdrawals",
+                    "description": "Channel for this subscription."
+                  }
+                }
+              },
+              "example": {
+                "op": "subscribe",
+                "channel": "withdrawals"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel update for `withdrawals`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "update"
+                      ]
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "withdrawals"
+                      ]
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/Withdrawal"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws": {
+      "get": {
+        "summary": "Connect",
+        "operationId": "wsConnect",
+        "description": "Establish a WebSocket connection. After connecting, send JSON messages to interact with the API.",
+        "tags": [
+          "Connection"
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols - WebSocket connection established"
+          }
+        }
+      },
+      "post": {
+        "summary": "Ping",
+        "operationId": "wsPing",
+        "description": "Send `{\"op\": \"ping\"}` to keep the connection alive. The server responds with `{\"type\": \"pong\"}`.",
+        "tags": [
+          "Connection"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "ping"
+                    ],
+                    "example": "ping",
+                    "description": "Operation type."
+                  }
+                }
+              },
+              "example": {
+                "op": "ping"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pong response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "pong"
+                      ]
+                    }
+                  }
+                },
+                "example": {
+                  "type": "pong"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/login": {
+      "post": {
+        "summary": "Login",
+        "operationId": "wsLogin",
+        "description": "Authenticate the WebSocket connection. Required before subscribing to private channels.\n\n**JWT login**: provide `args.token`.\n\n**API key login**: provide `args.key`, `args.time` (Unix milliseconds), and `args.sign` (HMAC-SHA256 of `time + \"ondo_perps_ws_login\"` using your API secret, hex-encoded).",
+        "tags": [
+          "Connection"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "op",
+                  "args"
+                ],
+                "properties": {
+                  "op": {
+                    "type": "string",
+                    "enum": [
+                      "login"
+                    ],
+                    "example": "login",
+                    "description": "Operation type."
+                  },
+                  "args": {
+                    "$ref": "#/components/schemas/LoginArgs"
+                  }
+                }
+              },
+              "example": {
+                "op": "login",
+                "args": {
+                  "token": "<JWT>"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "loggedIn"
+                      ]
+                    },
+                    "msg": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "type": "loggedIn",
+                  "msg": "Login successful"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Login failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "error"
+                      ]
+                    },
+                    "msg": {
+                      "type": "string",
+                      "enum": [
+                        "already logged in on this connection",
+                        "account already has too many connections"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LoginArgs": {
+        "type": "object",
+        "description": "Authentication arguments. Use either JWT (token) or API key (key + time + sign).",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "JWT token"
+          },
+          "key": {
+            "type": "string",
+            "description": "API key ID"
+          },
+          "time": {
+            "type": "string",
+            "description": "Unix timestamp in milliseconds"
+          },
+          "sign": {
+            "type": "string",
+            "description": "HMAC-SHA256 hex signature"
+          }
+        }
+      },
+      "WebSocketResponse": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "pong",
+              "loggedIn",
+              "subscribed",
+              "unsubscribed",
+              "update",
+              "error"
+            ],
+            "description": "Response type"
+          },
+          "channel": {
+            "type": "string",
+            "description": "Channel name (for subscribed/unsubscribed/update)"
+          },
+          "code": {
+            "type": "integer",
+            "description": "Error code (for error responses)"
+          },
+          "msg": {
+            "type": "string",
+            "description": "Human-readable message"
+          },
+          "data": {
+            "description": "Channel-specific payload (for update messages)"
+          }
+        }
+      },
+      "AccountWalletKey": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Account ID"
+          },
+          "wallet": {
+            "type": "string",
+            "enum": [
+              "main",
+              "margin"
+            ],
+            "description": "Wallet type"
+          }
+        }
+      },
+      "BookLevel": {
+        "type": "array",
+        "description": "Price level represented as [price, quantity]",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 2,
+        "example": [
+          "227.50",
+          "100.0"
+        ]
+      },
+      "BookSnapshot": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookLevel"
+            }
+          },
+          "depthLevels": {
+            "type": "string",
+            "description": "Price grouping level (if requested)"
+          }
+        },
+        "example": {
+          "market": "AAPL-USD.P",
+          "time": "2025-03-05T14:30:00Z",
+          "asks": [
+            [
+              "227.60",
+              "80.0"
+            ],
+            [
+              "227.70",
+              "150.0"
+            ]
+          ],
+          "bids": [
+            [
+              "227.40",
+              "100.0"
+            ],
+            [
+              "227.30",
+              "250.0"
+            ]
+          ]
+        }
+      },
+      "Trade": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "price": {
+            "type": "string",
+            "example": "227.50"
+          },
+          "size": {
+            "type": "string",
+            "example": "5.00"
+          },
+          "cost": {
+            "type": "string",
+            "example": "1137.50"
+          },
+          "aggressor_side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "example": "70a37d8f972f2494837f9dba8364cbb4"
+          }
+        },
+        "example": {
+          "market": "AAPL-USD.P",
+          "price": "227.50",
+          "size": "5.00",
+          "cost": "1137.50",
+          "aggressor_side": "buy",
+          "time": "2025-03-05T14:30:00Z",
+          "id": "70a37d8f972f2494837f9dba8364cbb4"
+        }
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "orderId": {
+            "type": "string",
+            "example": "197ec08e001658690721be129e7fa595"
+          },
+          "clientOrderId": {
+            "type": "string"
+          },
+          "parentOrderId": {
+            "type": "string"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "price": {
+            "type": "string",
+            "example": "227.50"
+          },
+          "size": {
+            "type": "string",
+            "example": "10.00"
+          },
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "filledSize": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "lastFillSize": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "filledCost": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "realizedPnl": {
+            "type": "string"
+          },
+          "fee": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "feeRebate": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "fullyfilled",
+              "canceled"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "filledAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "canceledAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cancelReason": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "limit",
+              "market"
+            ]
+          },
+          "timeInForce": {
+            "type": "string",
+            "enum": [
+              "GTC",
+              "IOC",
+              "FOK"
+            ]
+          },
+          "reduceOnly": {
+            "type": "boolean"
+          },
+          "liquidationId": {
+            "type": "string"
+          },
+          "closePosition": {
+            "type": "boolean"
+          },
+          "stopOrderType": {
+            "type": "string"
+          },
+          "triggerPrice": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "orderId": "197ec08e001658690721be129e7fa595",
+          "side": "buy",
+          "price": "227.50",
+          "size": "10.00",
+          "market": "AAPL-USD.P",
+          "filledSize": "0.00",
+          "filledCost": "0.00",
+          "fee": "0.00",
+          "status": "open",
+          "createdAt": "2025-03-05T14:30:00Z",
+          "type": "limit",
+          "timeInForce": "GTC"
+        }
+      },
+      "Fill": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "70a37d8f972f2494837f9dba8364cbb4"
+          },
+          "orderId": {
+            "type": "string",
+            "example": "197ec08e001658690721be129e7fa595"
+          },
+          "clientOrderId": {
+            "type": "string"
+          },
+          "parentOrderID": {
+            "type": "string"
+          },
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "price": {
+            "type": "string",
+            "example": "227.50"
+          },
+          "size": {
+            "type": "string",
+            "example": "5.00"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "open long",
+              "open short",
+              "close long",
+              "close short",
+              "flip long to short",
+              "flip short to long"
+            ]
+          },
+          "filledCost": {
+            "type": "string",
+            "example": "1137.50"
+          },
+          "fee": {
+            "type": "string",
+            "example": "0.57"
+          },
+          "feeRebate": {
+            "type": "string"
+          },
+          "pnl": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "isADL": {
+            "type": "boolean"
+          },
+          "adlReason": {
+            "type": "string"
+          },
+          "isMaker": {
+            "type": "boolean"
+          }
+        },
+        "example": {
+          "id": "70a37d8f972f2494837f9dba8364cbb4",
+          "orderId": "197ec08e001658690721be129e7fa595",
+          "market": "AAPL-USD.P",
+          "price": "227.50",
+          "size": "5.00",
+          "side": "buy",
+          "direction": "open long",
+          "filledCost": "1137.50",
+          "fee": "0.57",
+          "time": "2025-03-05T14:30:00Z",
+          "isMaker": false
+        }
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "long",
+              "short"
+            ]
+          },
+          "netQuantity": {
+            "type": "string",
+            "example": "10.00"
+          },
+          "averageEntryPrice": {
+            "type": "string",
+            "example": "225.00"
+          },
+          "usedMargin": {
+            "type": "string",
+            "example": "1125.00"
+          },
+          "unrealizedPnl": {
+            "type": "string",
+            "example": "25.00"
+          },
+          "markPrice": {
+            "type": "string",
+            "example": "227.50"
+          },
+          "liquidationPrice": {
+            "type": "string",
+            "example": "180.00"
+          },
+          "bankruptcyPrice": {
+            "type": "string",
+            "example": "170.00"
+          },
+          "maintenanceMargin": {
+            "type": "string",
+            "example": "112.50"
+          },
+          "notionalValue": {
+            "type": "string",
+            "example": "2275.00"
+          },
+          "leverage": {
+            "type": "string",
+            "example": "2.0"
+          },
+          "netFundingSinceNeutral": {
+            "type": "string",
+            "example": "-1.23"
+          },
+          "stopLossTriggerPrice": {
+            "type": "string"
+          },
+          "takeProfitTriggerPrice": {
+            "type": "string"
+          },
+          "returnOnEquity": {
+            "type": "string",
+            "example": "0.022"
+          }
+        }
+      },
+      "Balance": {
+        "type": "object",
+        "properties": {
+          "walletBalance": {
+            "type": "string",
+            "example": "5000.00"
+          },
+          "realizedPnl": {
+            "type": "string",
+            "example": "250.00"
+          },
+          "unrealizedPnl": {
+            "type": "string",
+            "example": "-50.00"
+          },
+          "marginBalance": {
+            "type": "string",
+            "example": "4950.00"
+          },
+          "usedMargin": {
+            "type": "string",
+            "example": "1125.00"
+          },
+          "availableMargin": {
+            "type": "string",
+            "example": "3825.00"
+          },
+          "withdrawableMargin": {
+            "type": "string",
+            "example": "3825.00"
+          },
+          "maintenanceMarginRequirement": {
+            "type": "string",
+            "example": "112.50"
+          },
+          "totalMaintenanceMargin": {
+            "type": "string",
+            "example": "200.00"
+          },
+          "marginRatio": {
+            "type": "string",
+            "example": "0.04"
+          },
+          "leverage": {
+            "type": "string",
+            "example": "0.46"
+          },
+          "underLiquidation": {
+            "type": "boolean",
+            "example": false
+          },
+          "totalFundingPayments": {
+            "type": "string",
+            "example": "-5.67"
+          },
+          "totalTradingFees": {
+            "type": "string",
+            "example": "12.34"
+          },
+          "totalPnL": {
+            "type": "string",
+            "example": "232.00"
+          },
+          "netInvested": {
+            "type": "string",
+            "example": "4750.00"
+          }
+        }
+      },
+      "FundingRate": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "rate": {
+            "type": "string",
+            "example": "0.0000125"
+          },
+          "intervalEnds": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "premiums": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PremiumIndexValue"
+            }
+          }
+        }
+      },
+      "PremiumIndexValue": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mark": {
+            "type": "string",
+            "description": "Mark price"
+          },
+          "bid": {
+            "type": "string",
+            "description": "Best bid"
+          },
+          "ask": {
+            "type": "string",
+            "description": "Best ask"
+          },
+          "premiumIndex": {
+            "type": "string"
+          }
+        }
+      },
+      "MarkPrice": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "markPrice": {
+            "type": "string",
+            "example": "227.50"
+          }
+        }
+      },
+      "FundingPayment": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "markPrice": {
+            "type": "string",
+            "example": "227.50"
+          },
+          "positionSize": {
+            "type": "string",
+            "example": "10.00"
+          },
+          "positionDirection": {
+            "type": "string",
+            "enum": [
+              "long",
+              "short"
+            ]
+          },
+          "rate": {
+            "type": "string",
+            "example": "0.0000125"
+          },
+          "payer": {
+            "type": "string",
+            "enum": [
+              "long",
+              "short"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "-0.02844"
+          }
+        }
+      },
+      "MarginTransfer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/AccountWalletKey"
+          },
+          "to": {
+            "$ref": "#/components/schemas/AccountWalletKey"
+          },
+          "amount": {
+            "type": "string",
+            "example": "1000.00"
+          },
+          "symbol": {
+            "type": "string",
+            "example": "USDC"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": "integer",
+            "description": "Transfer type"
+          }
+        }
+      },
+      "LiquidationEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "initiatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "insuranceFundUsed": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "adl": {
+            "type": "boolean"
+          },
+          "retryCount": {
+            "type": "integer"
+          },
+          "triggeringPositions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Position"
+            }
+          },
+          "filledQuoteSize": {
+            "type": "string"
+          },
+          "filledQuantity": {
+            "type": "string"
+          },
+          "reclaimOrderMargin": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LiquidationAnnouncement": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "resolved"
+            ]
+          },
+          "nextOffload": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "orders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "market": {
+                  "type": "string"
+                },
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "buy",
+                    "sell"
+                  ]
+                },
+                "price": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "string"
+                },
+                "positionSize": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "OrdersSummary": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "type": "string",
+            "example": "AAPL-USD.P"
+          },
+          "restingOrdersSummary": {
+            "type": "object"
+          },
+          "positionSummary": {
+            "type": "object"
+          },
+          "marketOrderSummary": {
+            "type": "object"
+          }
+        }
+      },
+      "Deposit": {
+        "type": "object",
+        "properties": {
+          "coin": {
+            "type": "string",
+            "example": "USDC"
+          },
+          "size": {
+            "type": "string",
+            "example": "1000.00"
+          },
+          "status": {
+            "type": "string",
+            "example": "confirmed"
+          },
+          "txid": {
+            "type": "string"
+          },
+          "fromAddress": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "currentConfirmations": {
+            "type": "integer"
+          },
+          "requiredConfirmations": {
+            "type": "integer"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "chainId": {
+            "type": "string"
+          },
+          "usdValue": {
+            "type": "string"
+          }
+        }
+      },
+      "Withdrawal": {
+        "type": "object",
+        "properties": {
+          "coin": {
+            "type": "string",
+            "example": "USDC"
+          },
+          "size": {
+            "type": "string",
+            "example": "500.00"
+          },
+          "status": {
+            "type": "string",
+            "example": "confirmed"
+          },
+          "address": {
+            "type": "string"
+          },
+          "withdrawal_id": {
+            "type": "string"
+          },
+          "txid": {
+            "type": "string"
+          },
+          "customer_withdrawal_id": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "usdValue": {
+            "type": "string"
+          },
+          "usdFee": {
+            "type": "string"
+          },
+          "chainId": {
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/AccountWalletKey"
+          }
+        }
+      },
+      "Kline": {
+        "type": "object",
+        "description": "Candlestick/kline data point",
+        "properties": {
+          "m": {
+            "type": "string",
+            "description": "Market",
+            "example": "AAPL-USD.P"
+          },
+          "t": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bar timestamp (Unix seconds)"
+          },
+          "s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Interval start (Unix seconds)"
+          },
+          "e": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Interval end (Unix seconds)"
+          },
+          "o": {
+            "type": "number",
+            "description": "Open price",
+            "example": 226.8
+          },
+          "h": {
+            "type": "number",
+            "description": "High price",
+            "example": 228.1
+          },
+          "l": {
+            "type": "number",
+            "description": "Low price",
+            "example": 226.5
+          },
+          "c": {
+            "type": "number",
+            "description": "Close price",
+            "example": 227.5
+          },
+          "v": {
+            "type": "number",
+            "description": "Volume",
+            "example": 12345.67
+          },
+          "x": {
+            "type": "boolean",
+            "description": "Whether this bar is closed",
+            "example": false
+          }
+        }
+      },
+      "WebSocketError": {
+        "type": "string",
+        "description": "Error messages returned by the WebSocket server",
+        "enum": [
+          "Request must be valid JSON",
+          "Rate limit exceeded",
+          "channel unsupported",
+          "login required",
+          "already logged in on this connection",
+          "account already has too many connections",
+          "too many price subscriptions",
+          "markets argument is not supported",
+          "single markets argument must be provided",
+          "provided market is invalid",
+          "provided market has not been subscribed",
+          "provided account id has not been subscribed",
+          "timeout_seconds argument is missing",
+          "timeout_seconds argument is not supported",
+          "provided history is invalid",
+          "kline resolution is missing",
+          "kline resolution is invalid",
+          "depth level must be a positive number",
+          "limit must be a 0 (unlimited) or positive integer"
+        ]
+      }
+    }
+  }
+}

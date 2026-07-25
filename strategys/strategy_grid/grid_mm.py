@@ -83,6 +83,28 @@ def convert_symbol_format(symbol, exchange_name):
     elif exchange_name == "lighter":
         # Lighter 适配器内部会做 normalize（移除分隔符并大写），这里保持原样
         return symbol
+    elif exchange_name == "popdex":
+        # PopDEX: BTC-USDT / BTC-USD -> BTCUSDT
+        s = symbol.replace("_Perp", "").replace("_", "").replace("-", "")
+        return s.upper()
+    elif exchange_name in ("ondo", "ondoperp", "ondoperps"):
+        # Ondo: AAPL-USD / AAPL → AAPL-USD.P
+        s = symbol.strip()
+        if s.upper().endswith(".P"):
+            if "." in s:
+                base, suf = s.rsplit(".", 1)
+                return f"{base.upper()}.{suf.upper()}"
+            return s.upper()
+        if "_" in s:
+            s = s.replace("_Perp", "").replace("_P", "").replace("_", "-")
+        if "-" not in s:
+            s = f"{s}-USD"
+        if not s.upper().endswith(".P"):
+            s = f"{s}.P"
+        if "." in s:
+            base, suf = s.rsplit(".", 1)
+            return f"{base.upper()}.{suf.upper()}"
+        return s.upper()
     else:
         # StandX 等其他交易所保持原格式
         return symbol
@@ -142,6 +164,15 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
         raise ValueError(f"配置错误: 交易所 '{active_exchange_name}' 在 exchanges 中不存在")
     
     EXCHANGE_CONFIG = config['exchanges'][active_exchange_name].copy()
+
+    def _expand(v):
+        if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+            return os.getenv(v[2:-1], "").strip()
+        return v
+
+    for k, v in list(EXCHANGE_CONFIG.items()):
+        EXCHANGE_CONFIG[k] = _expand(v)
+
     raw_symbol = EXCHANGE_CONFIG.pop('symbol', None)
     
     if not raw_symbol:
@@ -204,7 +235,6 @@ def generate_grid_arrays(
     current_price,
     price_step,
     grid_count,
-    price_spread,
     signed_position_size=Decimal("0"),
     order_quantity=Decimal("1"),
     max_position_multiplier=3,
@@ -288,10 +318,10 @@ def get_pending_orders_arrays(adapter, symbol):
             side = str(getattr(order, "side", "") or "").lower()
 
             parsed_order_id = None
-            try:
-                parsed_order_id = int(order.order_id)
-            except (ValueError, TypeError):
-                parsed_order_id = None
+            raw_id = getattr(order, "order_id", None)
+            if raw_id is not None and str(raw_id).strip():
+                # 保留字符串 ID（PopDEX 等）；数值型也统一成 str，兼容 cancel_orders_by_ids
+                parsed_order_id = str(raw_id).strip()
 
             if side in ["buy", "long"]:
                 if price not in long_prices:
@@ -343,8 +373,9 @@ def cancel_stale_order_ids(adapter, symbol, stale_seconds=5, cancel_probability=
                         # 根据概率决定是否取消
                         if random.random() < cancel_probability:
                             try:
-                                order_id = int(order.order_id)
-                                stale_order_ids.append(order_id)
+                                raw_id = getattr(order, "order_id", None)
+                                if raw_id is not None and str(raw_id).strip():
+                                    stale_order_ids.append(str(raw_id).strip())
                             except (ValueError, TypeError):
                                 pass
         
@@ -421,8 +452,13 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
     
     quantity_decimal = Decimal(str(quantity))
     exchange_name = str(EXCHANGE_CONFIG.get("exchange_name", "")).lower() if EXCHANGE_CONFIG else ""
-    # Lighter 当前适配器仅映射 gtc/ioc/fok；hype 使用 alo（post-only）
-    limit_tif = "gtc" if exchange_name == "lighter" else "alo"
+    # Lighter: gtc；PopDEX/Ondo: postonly；其余 (hype 等): alo
+    if exchange_name == "lighter":
+        limit_tif = "gtc"
+    elif exchange_name in ("popdex", "ondo", "ondoperp", "ondoperps"):
+        limit_tif = "postonly"
+    else:
+        limit_tif = "alo"
     
     # 做多订单：buy
     for price in place_long:
@@ -692,40 +728,6 @@ def current_position(adapter, symbol):
         return Decimal("0"), None
 
 
-def calculate_dynamic_price_spread(adx, current_price, default_spread, adx_threshold, adx_max=60):
-    """根据 ADX 值动态计算 price_spread
-    
-    Args:
-        adx: ADX 指标值
-        current_price: 当前价格
-        default_spread: 默认 price_spread
-        adx_threshold: ADX 阈值，低于此值使用默认值（通常为25）
-        adx_max: ADX 最大值，超过此值按此值处理（默认60）
-    
-    Returns:
-        int: 计算后的 price_spread
-    """
-    max_spread = current_price * 0.01  # 最大为价格的1%
-    
-    if adx is not None:
-        print(f"ADX(5m): {adx:.2f}")
-        # ADX <= threshold 时使用默认值
-        if adx <= adx_threshold:
-            price_spread = default_spread
-        else:
-            # 超过 60 按 60 处理
-            effective_adx = min(adx, adx_max)
-            # ADX 在 [threshold, 60] 范围内映射到 [默认值, 最大值]
-            ratio = (effective_adx - adx_threshold) / (adx_max - adx_threshold)  # ADX 25-60 映射到 0-1
-            dynamic_spread = default_spread + ratio * (max_spread - default_spread)
-            price_spread = int(min(dynamic_spread, max_spread))
-        print(f"动态 price_spread: {price_spread} (默认: {default_spread}, 最大: {int(max_spread)})")
-        return price_spread
-    else:
-        print(f"ADX(5m): 获取失败，使用默认 price_spread: {default_spread}")
-        return default_spread
-
-
 def run_strategy_cycle(adapter):
     """执行一次策略循环
     
@@ -745,17 +747,15 @@ def run_strategy_cycle(adapter):
             f"signed_size={signed_position}"
         )
 
-    price_spread = GRID_CONFIG['price_spread']
     order_quantity = Decimal(str(GRID_CONFIG.get('order_quantity', 1)))
     max_position_multiplier = GRID_CONFIG.get('max_position_multiplier', 3)
-    min_distance_abs = float(GRID_CONFIG.get('min_order_distance', 0))
-    min_distance_ratio = float(GRID_CONFIG.get('min_order_distance_ratio', 0))
+    # 贴市价过滤：直接用 price_step 作为最小挂单距离
+    min_distance = float(GRID_CONFIG['price_step'])
 
     long_grid, short_grid = generate_grid_arrays(
         last_price, 
         GRID_CONFIG['price_step'], 
         GRID_CONFIG['grid_count'],
-        price_spread,
         signed_position_size=signed_position,
         order_quantity=order_quantity,
         max_position_multiplier=max_position_multiplier,
@@ -792,9 +792,8 @@ def run_strategy_cycle(adapter):
         long_grid, short_grid, long_pending, short_pending
     )
 
-    effective_min_distance = max(min_distance_abs, float(last_price) * min_distance_ratio)
     place_long, place_short = filter_orders_by_min_distance(
-        place_long, place_short, last_price, effective_min_distance
+        place_long, place_short, last_price, min_distance
     )
 
     print(f"下单做多数组: {place_long}")
@@ -809,7 +808,9 @@ def run_strategy_cycle(adapter):
 
 def main():
     # 解析命令行参数
-    parser = argparse.ArgumentParser(description='网格交易策略脚本（支持 StandX / GRVT / Hype / Lighter）')
+    parser = argparse.ArgumentParser(
+        description="网格交易策略脚本（支持 StandX / GRVT / Hype / Lighter / PopDEX / Ondo）"
+    )
     parser.add_argument(
         '-c', '--config',
         type=str,
@@ -820,7 +821,7 @@ def main():
         '-e', '--exchange',
         type=str,
         required=True,
-        help='指定要使用的交易所名称（必需），例如: standx、grvt、hype 或 lighter'
+        help='交易所名称，例如: standx、grvt、hype、lighter、popdex 或 ondo'
     )
     args = parser.parse_args()
     
