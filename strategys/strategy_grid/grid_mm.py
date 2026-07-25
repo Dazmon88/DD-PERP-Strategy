@@ -240,8 +240,15 @@ def generate_grid_arrays(
     max_position_multiplier=3,
     lower_price=None,
     upper_price=None,
+    mode="neutral",
 ):
-    """从价格梯子中围绕当前价生成多空数组，并按持仓动态调整多空比例。"""
+    """从价格梯子中围绕当前价生成多空数组，并按持仓动态调整多空比例。
+
+    mode:
+      - neutral: 双边挂单（默认）
+      - long: 正常挂 buy；仅持仓为正时按可平仓量挂 sell
+      - short: 正常挂 sell；仅持仓为负时按可平仓量挂 buy
+    """
     if price_step <= 0:
         raise ValueError("price_step 必须大于 0")
     if grid_count < 0:
@@ -250,19 +257,24 @@ def generate_grid_arrays(
     if lower_price is None or upper_price is None:
         raise ValueError("必须配置 lower_price 和 upper_price")
 
+    mode = str(mode or "neutral").strip().lower()
+    if mode not in ("neutral", "long", "short"):
+        raise ValueError("mode 必须是 neutral / long / short")
+
     price_ladder = build_price_ladder(lower_price, upper_price, price_step)
     current_price = float(current_price)
-    
+    pos = Decimal(str(signed_position_size))
+    order_qty_decimal = Decimal(str(order_quantity))
+
     # 按当前持仓动态调整多空数组个数
     total_grid_count = grid_count * 2
     long_count = grid_count
     short_count = grid_count
     try:
-        order_qty_decimal = Decimal(str(order_quantity))
         max_multiplier_decimal = Decimal(str(max_position_multiplier))
         max_position = order_qty_decimal * max_multiplier_decimal
         if max_position > 0:
-            utilization = float(Decimal(str(signed_position_size)) / max_position)
+            utilization = float(pos / max_position)
             utilization = max(-1.0, min(1.0, utilization))
             bias = int(round(grid_count * utilization))
             long_count = max(0, min(total_grid_count, grid_count - bias))
@@ -279,7 +291,26 @@ def generate_grid_arrays(
     long_grid = list(reversed(long_candidates[-long_count:])) if long_count > 0 else []
     # short: 取离当前价最近的 N 个，按“近到远”输出
     short_grid = short_candidates[:short_count] if short_count > 0 else []
-    
+
+    # 按模式裁剪平仓侧：可平仓档数 = floor(|pos| / order_quantity)
+    if order_qty_decimal > 0:
+        close_levels = int(abs(pos) // order_qty_decimal)
+    else:
+        close_levels = 0
+
+    if mode == "long":
+        # 只建多；无多仓时不挂 sell，有多仓时 sell 不超过可平仓量
+        if pos <= 0:
+            short_grid = []
+        else:
+            short_grid = short_grid[:close_levels]
+    elif mode == "short":
+        # 只建空；无空仓时不挂 buy，有空仓时 buy 不超过可平仓量
+        if pos >= 0:
+            long_grid = []
+        else:
+            long_grid = long_grid[:close_levels]
+
     return long_grid, short_grid
 
 
@@ -749,6 +780,7 @@ def run_strategy_cycle(adapter):
 
     order_quantity = Decimal(str(GRID_CONFIG.get('order_quantity', 1)))
     max_position_multiplier = GRID_CONFIG.get('max_position_multiplier', 3)
+    mode = str(GRID_CONFIG.get('mode', 'neutral')).strip().lower()
     # 贴市价过滤：直接用 price_step 作为最小挂单距离
     min_distance = float(GRID_CONFIG['price_step'])
 
@@ -761,10 +793,11 @@ def run_strategy_cycle(adapter):
         max_position_multiplier=max_position_multiplier,
         lower_price=GRID_CONFIG.get('lower_price'),
         upper_price=GRID_CONFIG.get('upper_price'),
+        mode=mode,
     )
     max_position = order_quantity * Decimal(str(max_position_multiplier))
     print(
-        f"网格动态分配: signed_position={signed_position}, "
+        f"网格动态分配: mode={mode}, signed_position={signed_position}, "
         f"max_position={max_position}, long_count={len(long_grid)}, short_count={len(short_grid)}"
     )
     print(f"做多数组: {long_grid}")
