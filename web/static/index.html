@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FundRate — RWA 永续资金费率对比</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">FR</span>
+        <span class="brand-name">FundRate</span>
+      </a>
+
+      <div class="val-search" id="valSearch">
+        <label class="val-search-field">
+          <svg class="val-search-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path fill="currentColor" d="M8.5 3a5.5 5.5 0 0 1 4.38 8.82l3.15 3.15a1 1 0 0 1-1.41 1.41l-3.15-3.15A5.5 5.5 0 1 1 8.5 3Zm0 2a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/>
+          </svg>
+          <input
+            id="tickerSearch"
+            type="search"
+            placeholder="搜索股票代码 / 公司名"
+            autocomplete="off"
+            spellcheck="false"
+            aria-autocomplete="list"
+            aria-controls="tickerSuggest"
+            aria-expanded="false"
+          />
+          <kbd class="val-search-kbd" aria-hidden="true">/</kbd>
+        </label>
+        <div class="val-suggest" id="tickerSuggest" role="listbox" hidden>
+          <div class="val-suggest-head" id="suggestHead">市值前十</div>
+          <div class="val-suggest-list" id="suggestList"></div>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <span class="live-pill">
+          <span class="live-dot" id="liveDot"></span>
+          <span id="fetchedAt">—</span>
+        </span>
+        <button class="btn btn-ghost" id="refreshBtn" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="site-nav-wrap">
+      <nav class="site-nav" aria-label="主导航">
+        <a class="site-nav-link active" href="/">首页</a>
+        <a class="site-nav-link" href="/#markets">永续费率</a>
+        <a class="site-nav-link" href="/valuation?symbol=AAPL">美股估值</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="side-row">
+      <article class="card calendar-panel">
+        <div class="calendar-head">
+          <div>
+            <p class="eyebrow">This week</p>
+            <h2>美股财报 &amp; 经济数据</h2>
+            <p class="lede" id="calendarLede">本周美股财报（有永续优先）+ 美/日经济数据 · 时间均为香港时间</p>
+          </div>
+          <div class="calendar-legend">
+            <span class="badge-hour bmo">BMO</span>
+            <span class="badge-hour tbd">TBD</span>
+            <span class="badge-hour amc">AMC</span>
+            <span class="badge-mkt macro">US</span>
+            <span class="badge-mkt macro jp">JP</span>
+          </div>
+        </div>
+        <div class="week-board" id="weekBoard">
+          <div class="muted calendar-loading">加载本周日历…</div>
+        </div>
+      </article>
+      <article class="card hot">
+        <div class="hot-head">
+          <h2>Hot spreads</h2>
+          <span class="hot-badge">TOP</span>
+        </div>
+        <ol class="hot-list" id="hotList">
+          <li class="muted">加载中…</li>
+        </ol>
+      </article>
+    </section>
+
+    <section class="markets" id="markets">
+      <div class="markets-head">
+        <h2>All pairs</h2>
+        <div class="filters">
+          <div class="display-pills" id="displayPills" role="group" aria-label="费率展示">
+            <button type="button" class="display-pill active" data-display="rate_1h">每小时</button>
+            <button type="button" class="display-pill" data-display="rate_8h">8 小时</button>
+            <button type="button" class="display-pill" data-display="apr">年化</button>
+            <button type="button" class="display-pill" data-display="rate">原始</button>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="arbOnly" />
+            <span>仅可套利</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="markets-toolbar">
+        <nav class="cat-nav" id="categoryPills" aria-label="品类">
+          <button class="cat active" data-category="rwa">RWA</button>
+          <button class="cat" data-category="stock">美股</button>
+          <button class="cat" data-category="commodity">商品</button>
+          <button class="cat" data-category="etf">ETF</button>
+          <button class="cat" data-category="index">指数</button>
+          <button class="cat" data-category="crypto">加密</button>
+          <button class="cat" data-category="">全部</button>
+        </nav>
+        <label class="search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/>
+            <path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <input id="pairSearch" type="search" placeholder="搜索" autocomplete="off" />
+        </label>
+      </div>
+
+      <div class="legend-row">
+        <span><i class="swatch muted-swatch"></i> 正费率 / 零</span>
+        <span><i class="swatch no"></i> 负费率</span>
+        <span><i class="swatch yes"></i> 套利差为正</span>
+        <span><i class="swatch no"></i> 套利差为负</span>
+        <span class="muted">结算：1 小时</span>
+      </div>
+
+      <article class="card matrix-card">
+        <div id="status" class="status">加载中…</div>
+        <div class="table-scroll">
+          <table id="matrixTable" class="matrix" hidden>
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>公开行情聚合 · Ondo / Arcus / StandX / Hype / Lighter · 不构成投资建议</p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

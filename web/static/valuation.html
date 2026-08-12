@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FundRate · Trailing P/E</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/chart.css" />
+  <link rel="stylesheet" href="/static/valuation.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="brand-mark">FR</span>
+        <span class="brand-name">FundRate</span>
+      </a>
+      <div class="val-search" id="valSearch">
+        <label class="val-search-field">
+          <svg class="val-search-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <path fill="currentColor" d="M8.5 3a5.5 5.5 0 0 1 4.38 8.82l3.15 3.15a1 1 0 0 1-1.41 1.41l-3.15-3.15A5.5 5.5 0 1 1 8.5 3Zm0 2a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/>
+          </svg>
+          <input
+            id="tickerSearch"
+            type="search"
+            placeholder="搜索股票代码 / 公司名"
+            autocomplete="off"
+            spellcheck="false"
+            aria-autocomplete="list"
+            aria-controls="tickerSuggest"
+            aria-expanded="false"
+          />
+          <kbd class="val-search-kbd" aria-hidden="true">/</kbd>
+        </label>
+        <div class="val-suggest" id="tickerSuggest" role="listbox" hidden>
+          <div class="val-suggest-head" id="suggestHead">市值前十</div>
+          <div class="val-suggest-list" id="suggestList"></div>
+        </div>
+      </div>
+      <div class="top-actions"></div>
+    </div>
+    <div class="site-nav-wrap">
+      <nav class="site-nav" aria-label="主导航">
+        <a class="site-nav-link" href="/">首页</a>
+        <a class="site-nav-link" href="/#markets">永续费率</a>
+        <a class="site-nav-link active" href="/valuation?symbol=AAPL">美股估值</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="chart-main">
+    <section class="card chart-hero">
+      <div class="chart-hero-text">
+        <p class="eyebrow">Valuation · Trailing P/E (TTM)</p>
+        <h1 id="symTitle">—</h1>
+        <p class="lede" id="symLede">自建日频估值曲线 · 非 Bloomberg BEst / Forward P/E</p>
+      </div>
+      <div class="chart-controls">
+        <div class="pills" id="rangePills">
+          <button class="pill" data-range="1y">1Y</button>
+          <button class="pill" data-range="3y">3Y</button>
+          <button class="pill active" data-range="5y">5Y</button>
+          <button class="pill" data-range="max">Max</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="kpi-row" id="kpiRow">
+      <article class="kpi"><span class="kpi-label">当前 PE</span><strong id="kpiPe">—</strong></article>
+      <article class="kpi kpi-zone" id="kpiZoneCard">
+        <span class="kpi-label">估值区间</span>
+        <strong id="kpiZone">—</strong>
+      </article>
+      <article class="kpi"><span class="kpi-label">历史分位</span><strong id="kpiPct">—</strong></article>
+      <article class="kpi"><span class="kpi-label">区间中位数</span><strong id="kpiMed">—</strong></article>
+    </section>
+
+    <div class="zone-strip" id="zoneStrip" hidden></div>
+
+    <div class="val-notice" id="valNotice" hidden></div>
+
+    <section class="card legend-bar" id="hoverLegend">
+      移动鼠标查看 PE / 股价形态 / TTM EPS
+    </section>
+
+    <section class="card chart-wrap">
+      <div id="tvChart" class="tv-chart"></div>
+      <div id="chartStatus" class="status">加载估值曲线…</div>
+    </section>
+  </main>
+
+  <script src="/static/valuation.js"></script>
+</body>
+</html>

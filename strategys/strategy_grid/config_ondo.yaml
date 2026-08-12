@@ -1,0 +1,34 @@
+# Ondo Perps 网格配置示例
+# 密钥请写在仓库根目录 .generated/ondo.json
+# 用法:
+#   cd strategys/strategy_grid
+#   python grid_mm.py -c config_ondo.yaml -e ondo
+
+exchanges:
+  ondo:
+    exchange_name: ondo
+    network: mainnet
+    timeout: 15
+    # Ondo 市场名：AAPL-USD.P（策略会 normalize）
+    symbol: XAU-USD.P
+
+grid:
+  # mode: neutral | long | short
+  mode: neutral
+  upper_price: 5000
+  lower_price: 3000
+  price_step: 5
+  grid_count: 5
+  order_quantity: 0.001
+  sleep_interval: 5
+  max_position_multiplier: 5
+
+risk:
+  enable: false
+
+telegram:
+  enable: false
+  interval_seconds: 3600
+  bot_token: ""
+  chat_id: ""
+  message_format: "[{exchange}余额] {balance}U"

@@ -105,11 +105,6 @@ def convert_symbol_format(symbol, exchange_name):
             base, suf = s.rsplit(".", 1)
             return f"{base.upper()}.{suf.upper()}"
         return s.upper()
-    elif exchange_name == "arcus":
-        # Arcus: BTC / BTCUSDT / BTC-USDT → BTC-USD
-        from adapters.arcus_adapter import normalize_arcus_symbol
-
-        return normalize_arcus_symbol(symbol)
     else:
         # StandX 等其他交易所保持原格式
         return symbol
@@ -170,19 +165,6 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
     
     EXCHANGE_CONFIG = config['exchanges'][active_exchange_name].copy()
 
-    # 合并 .generated/{exchange}.json 密钥（覆盖 yaml 中的空/${ENV}）
-    try:
-        from tools.generated_keys import merge_generated
-
-        EXCHANGE_CONFIG = merge_generated(EXCHANGE_CONFIG, active_exchange_name)
-        # 别名：ondoperp → 也尝试 ondo.json
-        if active_exchange_name in ("ondoperp", "ondoperps"):
-            EXCHANGE_CONFIG = merge_generated(EXCHANGE_CONFIG, "ondo")
-        if active_exchange_name == "hyperliquid":
-            EXCHANGE_CONFIG = merge_generated(EXCHANGE_CONFIG, "hype")
-    except Exception as e:
-        print(f"警告: 加载 .generated 密钥失败: {e}")
-
     def _expand(v):
         if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
             return os.getenv(v[2:-1], "").strip()
@@ -204,16 +186,6 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
     RISK_CONFIG = config.get('risk', {})
     CANCEL_STALE_ORDERS_CONFIG = config.get('cancel_stale_orders', {})
     TELEGRAM_CONFIG = config.get('telegram', {})
-    # Telegram 凭据也可放 .generated/telegram.json
-    try:
-        from tools.generated_keys import merge_generated
-
-        TELEGRAM_CONFIG = merge_generated(TELEGRAM_CONFIG, "telegram", only_empty=True)
-    except Exception:
-        pass
-    for k, v in list(TELEGRAM_CONFIG.items()):
-        if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
-            TELEGRAM_CONFIG[k] = os.getenv(v[2:-1], "").strip()
 
 
 def get_price_precision(price_step):
@@ -268,17 +240,8 @@ def generate_grid_arrays(
     max_position_multiplier=3,
     lower_price=None,
     upper_price=None,
-    mode="neutral",
 ):
-    """从价格梯子中围绕当前价生成多空数组，并按持仓动态调整多空比例。
-
-    mode:
-      - neutral: 双边挂单（默认）；买卖间隔均为 price_step
-      - long: 正常挂 buy（间隔 price_step）；仅持仓为正时按可平仓量挂 sell，
-              且 sell 间隔自动为 price_step * 2
-      - short: 正常挂 sell（间隔 price_step）；仅持仓为负时按可平仓量挂 buy，
-               且 buy 间隔自动为 price_step * 2
-    """
+    """从价格梯子中围绕当前价生成多空数组，并按持仓动态调整多空比例。"""
     if price_step <= 0:
         raise ValueError("price_step 必须大于 0")
     if grid_count < 0:
@@ -287,30 +250,19 @@ def generate_grid_arrays(
     if lower_price is None or upper_price is None:
         raise ValueError("必须配置 lower_price 和 upper_price")
 
-    mode = str(mode or "neutral").strip().lower()
-    if mode not in ("neutral", "long", "short"):
-        raise ValueError("mode 必须是 neutral / long / short")
-
+    price_ladder = build_price_ladder(lower_price, upper_price, price_step)
     current_price = float(current_price)
-    pos = Decimal(str(signed_position_size))
-    order_qty_decimal = Decimal(str(order_quantity))
-
-    # 平仓侧间距 *2：long 时 widen sell；short 时 widen buy
-    buy_step = float(price_step) * (2.0 if mode == "short" else 1.0)
-    sell_step = float(price_step) * (2.0 if mode == "long" else 1.0)
-
-    buy_ladder = build_price_ladder(lower_price, upper_price, buy_step)
-    sell_ladder = build_price_ladder(lower_price, upper_price, sell_step)
-
+    
     # 按当前持仓动态调整多空数组个数
     total_grid_count = grid_count * 2
     long_count = grid_count
     short_count = grid_count
     try:
+        order_qty_decimal = Decimal(str(order_quantity))
         max_multiplier_decimal = Decimal(str(max_position_multiplier))
         max_position = order_qty_decimal * max_multiplier_decimal
         if max_position > 0:
-            utilization = float(pos / max_position)
+            utilization = float(Decimal(str(signed_position_size)) / max_position)
             utilization = max(-1.0, min(1.0, utilization))
             bias = int(round(grid_count * utilization))
             long_count = max(0, min(total_grid_count, grid_count - bias))
@@ -320,33 +272,14 @@ def generate_grid_arrays(
         long_count = grid_count
         short_count = grid_count
 
-    long_candidates = [p for p in buy_ladder if p < current_price]
-    short_candidates = [p for p in sell_ladder if p > current_price]
+    long_candidates = [p for p in price_ladder if p < current_price]
+    short_candidates = [p for p in price_ladder if p > current_price]
 
     # long: 取离当前价最近的 N 个，按“近到远”输出
     long_grid = list(reversed(long_candidates[-long_count:])) if long_count > 0 else []
     # short: 取离当前价最近的 N 个，按“近到远”输出
     short_grid = short_candidates[:short_count] if short_count > 0 else []
-
-    # 按模式裁剪平仓侧：可平仓档数 = floor(|pos| / order_quantity)
-    if order_qty_decimal > 0:
-        close_levels = int(abs(pos) // order_qty_decimal)
-    else:
-        close_levels = 0
-
-    if mode == "long":
-        # 只建多；无多仓时不挂 sell，有多仓时 sell 不超过可平仓量
-        if pos <= 0:
-            short_grid = []
-        else:
-            short_grid = short_grid[:close_levels]
-    elif mode == "short":
-        # 只建空；无空仓时不挂 buy，有空仓时 buy 不超过可平仓量
-        if pos >= 0:
-            long_grid = []
-        else:
-            long_grid = long_grid[:close_levels]
-
+    
     return long_grid, short_grid
 
 
@@ -519,7 +452,7 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
     
     quantity_decimal = Decimal(str(quantity))
     exchange_name = str(EXCHANGE_CONFIG.get("exchange_name", "")).lower() if EXCHANGE_CONFIG else ""
-    # Lighter: gtc；PopDEX/Ondo: postonly；Arcus/Hype 等: alo
+    # Lighter: gtc；PopDEX/Ondo: postonly；其余 (hype 等): alo
     if exchange_name == "lighter":
         limit_tif = "gtc"
     elif exchange_name in ("popdex", "ondo", "ondoperp", "ondoperps"):
@@ -816,7 +749,6 @@ def run_strategy_cycle(adapter):
 
     order_quantity = Decimal(str(GRID_CONFIG.get('order_quantity', 1)))
     max_position_multiplier = GRID_CONFIG.get('max_position_multiplier', 3)
-    mode = str(GRID_CONFIG.get('mode', 'neutral')).strip().lower()
     # 贴市价过滤：直接用 price_step 作为最小挂单距离
     min_distance = float(GRID_CONFIG['price_step'])
 
@@ -829,11 +761,10 @@ def run_strategy_cycle(adapter):
         max_position_multiplier=max_position_multiplier,
         lower_price=GRID_CONFIG.get('lower_price'),
         upper_price=GRID_CONFIG.get('upper_price'),
-        mode=mode,
     )
     max_position = order_quantity * Decimal(str(max_position_multiplier))
     print(
-        f"网格动态分配: mode={mode}, signed_position={signed_position}, "
+        f"网格动态分配: signed_position={signed_position}, "
         f"max_position={max_position}, long_count={len(long_grid)}, short_count={len(short_grid)}"
     )
     print(f"做多数组: {long_grid}")
@@ -878,7 +809,7 @@ def run_strategy_cycle(adapter):
 def main():
     # 解析命令行参数
     parser = argparse.ArgumentParser(
-        description="网格交易策略脚本（支持 StandX / GRVT / Hype / Lighter / PopDEX / Ondo / Arcus）"
+        description="网格交易策略脚本（支持 StandX / GRVT / Hype / Lighter / PopDEX / Ondo）"
     )
     parser.add_argument(
         '-c', '--config',
@@ -890,7 +821,7 @@ def main():
         '-e', '--exchange',
         type=str,
         required=True,
-        help='交易所名称，例如: standx、grvt、hype、lighter、popdex、ondo 或 arcus'
+        help='交易所名称，例如: standx、grvt、hype、lighter、popdex 或 ondo'
     )
     args = parser.parse_args()
     

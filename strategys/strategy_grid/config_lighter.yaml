@@ -1,0 +1,49 @@
+# 密钥请写在仓库根目录 .generated/{standx,grvt,hype,lighter,telegram}.json
+exchanges:
+  standx:
+    exchange_name: standx
+    chain: bsc
+    symbol: BTC-USD
+
+  grvt:
+    exchange_name: grvt
+    env: prod
+    symbol: BTC-USDT
+
+  hype:
+    exchange_name: hype
+    base_url: "https://api.hyperliquid.xyz"
+    timeout: 10
+    perp_dexs: ["xyz"]
+    symbol: xyz:XYZ100
+
+  lighter:
+    exchange_name: lighter
+    base_url: "https://mainnet.zklighter.elliot.ai"
+    market_type: "perp"
+    auth_expiry_sec: 600
+    # Lighter 常见交易对写法可用 "BTC-USDC" / "ETH-USDC"（适配器会自动 normalize）
+    symbol: BTC-USDC
+    
+grid:
+  # mode: neutral | long | short
+  mode: neutral
+  upper_price: 100000
+  lower_price: 10000
+  price_step: 30
+  grid_count: 5
+  order_quantity: 0.001
+  sleep_interval: 5
+  max_position_multiplier: 5
+
+risk:
+  enable: false
+  adx_threshold: 16
+  adx_max: 60
+
+telegram:
+  enable: true
+  interval_seconds: 3600
+  bot_token: ""
+  chat_id: ""
+  message_format: "[{exchange}余额] {balance}U (持仓价值 {position_value}U)"

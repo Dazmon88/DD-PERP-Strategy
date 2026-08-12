@@ -206,7 +206,26 @@ class OndoPerpHTTP:
         return self._get("/v1/perps/trades", params={"market": market, **params})
 
     def get_candles(self, market: str, **params: Any) -> Any:
-        return self._get("/v1/perps/candles", params={"market": market, **params})
+        # Ondo 网关对 /v1/perps/candles 要求鉴权
+        return self._get(
+            "/v1/perps/candles",
+            params={"market": market, **params},
+            auth_required=True,
+        )
+
+    def get_price_history(self, symbol: str, **params: Any) -> Any:
+        """
+        TradingView UDF 历史 K 线（公开，无需鉴权）。
+
+        参数: symbol / resolution / from / to（Unix 秒）
+        返回: {s, t, o, h, l, c, v}
+        注意: symbol 用 displayName 风格，如 BTCUSD.P（不是 BTC-USD.P）
+        """
+        return self._get(
+            "/v1/perps/history",
+            params={"symbol": symbol, **params},
+            auth_required=False,
+        )
 
     def get_funding_rates(self, **params: Any) -> Any:
         return self._get("/v1/perps/funding_rates", params=params or None)

@@ -1,0 +1,38 @@
+# PopDEX 网格策略配置示例
+# 密钥请写在仓库根目录 .generated/popdex.json
+# 用法:
+#   cd strategys/strategy_grid
+#   python grid_mm.py -c config_popdex.yaml -e popdex
+
+exchanges:
+  popdex:
+    exchange_name: popdex
+    network: mainnet
+    category: Futures
+    timeout: 15
+    # PopDEX 交易对：BTCUSDT；也可用 BTC-USDT（策略会 normalize）
+    symbol: BTC-USDT
+
+grid:
+  # mode: neutral | long | short
+  mode: neutral
+  upper_price: 100000
+  lower_price: 10000
+  price_step: 10
+  grid_count: 10
+  order_quantity: 0.002
+  # 链上确认稍慢，建议 >= 5
+  sleep_interval: 8
+  max_position_multiplier: 10
+
+risk:
+  enable: false
+  adx_threshold: 16
+  adx_max: 60
+
+telegram:
+  enable: false
+  interval_seconds: 3600
+  bot_token: ""
+  chat_id: ""
+  message_format: "[{exchange}余额] {balance}U (持仓价值 {position_value}U)"

@@ -5,3 +5,5 @@ strategys/strategy_standx/config.yaml
 *.pyc
 agent.key
 strategys/strategy_common/config.yaml
+strategys/strategy_compara/arbitrage_config.yaml
+strategys/strategy_compara/arbitrage_config_standx.yaml

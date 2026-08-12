@@ -1,0 +1,5 @@
+# 忽略真实密钥，保留模板与说明
+*.json
+!*.example.json
+!.gitignore
+!README.md

@@ -1,0 +1,36 @@
+# Arcus 网格策略配置示例
+# 密钥请写在仓库根目录 .generated/arcus.json
+# 用法:
+#   cd strategys/strategy_grid
+#   python grid_mm.py -c config_arcus.yaml -e arcus
+#
+# 首次需用主钱包 EIP-712 注册 API Key（见 arcus_protocol.account.create_api_key）
+
+exchanges:
+  arcus:
+    exchange_name: arcus
+    network: testnet
+    timeout: 15
+    # Arcus 市场名：BTC-USD（也可用 BTC / BTCUSDT，策略会 normalize）
+    symbol: BTC-USD
+
+grid:
+  # mode: neutral | long | short
+  mode: neutral
+  upper_price: 100000
+  lower_price: 10000
+  price_step: 10
+  grid_count: 5
+  order_quantity: 0.001
+  sleep_interval: 5
+  max_position_multiplier: 5
+
+risk:
+  enable: false
+
+telegram:
+  enable: false
+  interval_seconds: 3600
+  bot_token: ""
+  chat_id: ""
+  message_format: "[{exchange}余额] {balance}U"

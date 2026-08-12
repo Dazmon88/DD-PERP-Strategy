@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FundRate Chart</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/chart.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner chart-top">
+      <a class="brand" href="/">
+        <span class="brand-mark">FR</span>
+        <span class="brand-name">FundRate</span>
+      </a>
+      <nav class="top-actions">
+        <a class="btn btn-ghost" href="/">← 矩阵</a>
+        <span class="live-pill">
+          <span class="live-dot" id="liveDot"></span>
+          <span id="connStatus">连接中…</span>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main class="chart-main">
+    <section class="card chart-hero">
+      <div class="chart-hero-text">
+        <p class="eyebrow">Multi-venue · Mid / Last</p>
+        <h1 id="pairTitle">—</h1>
+        <p class="lede">全折线对比 · 悬停显示各所价格 · REST 历史 + WSS 实时</p>
+      </div>
+      <div class="chart-controls">
+        <div class="pills" id="intervalPills">
+          <button class="pill" data-interval="1m">1m</button>
+          <button class="pill active" data-interval="5m">5m</button>
+          <button class="pill" data-interval="15m">15m</button>
+          <button class="pill" data-interval="1h">1h</button>
+        </div>
+        <div class="pills" id="exchangePills"></div>
+      </div>
+    </section>
+
+    <section class="card legend-bar" id="hoverLegend">移动鼠标查看各所价格</section>
+
+    <section class="card chart-wrap">
+      <div id="tvChart" class="tv-chart"></div>
+      <div id="chartStatus" class="status">加载历史…</div>
+    </section>
+  </main>
+
+  <script src="/static/chart.js"></script>
+</body>
+</html>
