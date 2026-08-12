@@ -618,6 +618,7 @@ class ArcusAdapter(BasePerpAdapter):
             raise Exception(f"查询未成交订单失败: {e}") from e
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
+        """优先只打 BBO（weight 2）；避免每轮再打 mids/markets 加重 IP 限流。"""
         market = normalize_arcus_symbol(symbol)
         try:
             bid = ask = last = mark = index = funding = None
@@ -633,14 +634,7 @@ class ArcusAdapter(BasePerpAdapter):
             except Exception:
                 pass
 
-            try:
-                mids = self.http_client.get_all_mid_prices()
-                mid_map = mids.get("mids", mids) if isinstance(mids, dict) else {}
-                if isinstance(mid_map, dict) and mid_map.get(market) not in (None, ""):
-                    last = float(mid_map[market])
-            except Exception:
-                pass
-
+            # 仅用本地 markets 缓存补 mark（连接时已 refresh，不再每轮 GET /markets）
             try:
                 meta = self.http_client.market_meta(market=market)["raw"]
                 if meta.get("markPrice") not in (None, ""):
@@ -657,6 +651,7 @@ class ArcusAdapter(BasePerpAdapter):
             mid = None
             if bid is not None and ask is not None:
                 mid = (bid + ask) / 2.0
+                last = last if last is not None else mid
             elif last is not None:
                 mid = last
 

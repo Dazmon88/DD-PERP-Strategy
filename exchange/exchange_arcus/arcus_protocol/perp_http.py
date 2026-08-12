@@ -8,6 +8,7 @@ Arcus Perps HTTP API Client
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import requests
@@ -28,6 +29,25 @@ REST_URLS = {
 }
 
 
+def _retry_after_seconds(resp: requests.Response, attempt: int) -> float:
+    """解析 429 的等待秒数：优先 Retry-After / body.retry_after，否则指数退避。"""
+    hdr = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
+    if hdr:
+        try:
+            return max(1.0, float(hdr))
+        except ValueError:
+            pass
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            ra = body.get("retry_after") or body.get("retryAfter")
+            if ra is not None:
+                return max(1.0, float(ra))
+    except Exception:
+        pass
+    return float(min(120.0, (2**attempt) * 2.0))
+
+
 class ArcusPerpHTTP:
     """Arcus REST 客户端"""
 
@@ -38,6 +58,7 @@ class ArcusPerpHTTP:
         network: str = "mainnet",
         auth: Optional[ArcusAuth] = None,
         timeout: float = 15.0,
+        max_retries: int = 5,
     ):
         if base_url:
             self.base_url = base_url.rstrip("/")
@@ -48,6 +69,7 @@ class ArcusPerpHTTP:
         self.network = network
         self.auth = auth
         self.timeout = timeout
+        self.max_retries = max(0, int(max_retries))
         self._session = requests.Session()
         self._markets_cache: Optional[Dict[Any, Dict[str, Any]]] = None
 
@@ -87,24 +109,43 @@ class ArcusPerpHTTP:
         if headers:
             hdrs.update(headers)
 
-        resp = self._session.request(
-            method=method.upper(),
-            url=self._url(path),
-            params=clean_params,
-            data=body_str.encode("utf-8") if body_str else None,
-            headers=hdrs,
-            timeout=self.timeout,
-        )
         ok_statuses = set(allow_statuses or ()) | {200, 201, 202}
-        if resp.status_code not in ok_statuses and not resp.ok:
-            raise ValueError(f"HTTP {resp.status_code}: {resp.text}")
+        attempts = self.max_retries + 1
+        last_err: Optional[Exception] = None
 
-        if not resp.content:
-            return {"status": resp.status_code}
-        try:
-            return resp.json()
-        except Exception:
-            return resp.text
+        for attempt in range(attempts):
+            resp = self._session.request(
+                method=method.upper(),
+                url=self._url(path),
+                params=clean_params,
+                data=body_str.encode("utf-8") if body_str else None,
+                headers=hdrs,
+                timeout=self.timeout,
+            )
+            if resp.status_code == 429:
+                wait = _retry_after_seconds(resp, attempt)
+                last_err = ValueError(f"HTTP {resp.status_code}: {resp.text}")
+                if attempt >= attempts - 1:
+                    raise last_err
+                print(
+                    f"[arcus 429] {method.upper()} {path} "
+                    f"第 {attempt + 1}/{self.max_retries} 次重试，休眠 {wait:.0f}s"
+                )
+                time.sleep(wait)
+                continue
+
+            if resp.status_code not in ok_statuses and not resp.ok:
+                raise ValueError(f"HTTP {resp.status_code}: {resp.text}")
+
+            if not resp.content:
+                return {"status": resp.status_code}
+            try:
+                return resp.json()
+            except Exception:
+                return resp.text
+
+        assert last_err is not None
+        raise last_err
 
     def _get(
         self,

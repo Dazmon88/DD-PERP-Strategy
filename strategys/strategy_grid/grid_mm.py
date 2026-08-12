@@ -778,7 +778,10 @@ def close_position_if_exists(adapter, symbol):
 
 
 def current_position(adapter, symbol):
-    """获取当前币种持仓（返回签名持仓、原始持仓对象）。"""
+    """获取当前币种持仓（返回签名持仓、原始持仓对象）。
+
+    查询失败时返回 (None, None)，勿当作空仓，否则会按无仓继续挂单。
+    """
     try:
         positions = adapter.get_positions(symbol)
         if not positions:
@@ -792,7 +795,7 @@ def current_position(adapter, symbol):
         return size, position
     except Exception as e:
         print(f"当前持仓查询失败: {e}")
-        return Decimal("0"), None
+        return None, None
 
 
 def run_strategy_cycle(adapter):
@@ -806,6 +809,9 @@ def run_strategy_cycle(adapter):
     print(f"{SYMBOL} 价格: {last_price:.2f}")
 
     signed_position, position_obj = current_position(adapter, SYMBOL)
+    if signed_position is None:
+        print("持仓查询失败，跳过本轮挂撤单（避免误按空仓调仓）")
+        return
     if position_obj is None or signed_position == Decimal("0"):
         print("当前持仓: 无")
     else:

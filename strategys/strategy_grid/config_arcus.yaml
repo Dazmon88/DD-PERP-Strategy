@@ -29,7 +29,8 @@ grid:
   price_step: 10
   grid_count: 5
   order_quantity: 0.001
-  sleep_interval: 5
+  # Arcus REST 按 IP 计 weight；openOrders=20，轮询过密易触发 Cloudflare 429
+  sleep_interval: 15
   max_position_multiplier: 5
 
 risk:
