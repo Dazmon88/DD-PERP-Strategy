@@ -618,10 +618,12 @@ class ArcusAdapter(BasePerpAdapter):
             raise Exception(f"查询未成交订单失败: {e}") from e
 
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
-        """优先只打 BBO（weight 2）；避免每轮再打 mids/markets 加重 IP 限流。"""
+        """优先用 BBO 实时中间价（weight 2）；缓存 markets 只补 mark，不覆盖实时价。"""
         market = normalize_arcus_symbol(symbol)
         try:
-            bid = ask = last = mark = index = funding = None
+            bid = ask = mark = index = funding = None
+            live_mid: Optional[float] = None
+
             try:
                 bbo = self.http_client.get_bbo(market=market)
                 if isinstance(bbo, dict):
@@ -634,34 +636,43 @@ class ArcusAdapter(BasePerpAdapter):
             except Exception:
                 pass
 
-            # 仅用本地 markets 缓存补 mark（连接时已 refresh，不再每轮 GET /markets）
+            if bid is not None and ask is not None:
+                live_mid = (bid + ask) / 2.0
+            elif bid is not None:
+                live_mid = bid
+            elif ask is not None:
+                live_mid = ask
+
+            # BBO 空时再打 mids（同为 weight 2），仍不打 /markets
+            if live_mid is None:
+                try:
+                    mids = self.http_client.get_all_mid_prices()
+                    mid_map = mids.get("mids", mids) if isinstance(mids, dict) else {}
+                    if isinstance(mid_map, dict) and mid_map.get(market) not in (None, ""):
+                        live_mid = float(mid_map[market])
+                except Exception:
+                    pass
+
+            # 本地 markets 缓存仅作 mark/index 兜底（连接时 refresh，可能略旧）
             try:
                 meta = self.http_client.market_meta(market=market)["raw"]
                 if meta.get("markPrice") not in (None, ""):
                     mark = float(meta["markPrice"])
                 if meta.get("oraclePrice") not in (None, ""):
                     index = float(meta["oraclePrice"])
-                if meta.get("lastTradePrice") not in (None, ""):
-                    last = float(meta["lastTradePrice"])
                 if meta.get("fundingRate") not in (None, ""):
                     funding = float(meta["fundingRate"])
             except Exception:
                 pass
 
-            mid = None
-            if bid is not None and ask is not None:
-                mid = (bid + ask) / 2.0
-                last = last if last is not None else mid
-            elif last is not None:
-                mid = last
-
+            px = live_mid if live_mid is not None else mark
             return {
                 "symbol": market,
                 "bid_price": bid,
                 "ask_price": ask,
-                "last_price": last if last is not None else mark,
-                "mid_price": mid if mid is not None else mark,
-                "mark_price": mark if mark is not None else last,
+                "last_price": px,
+                "mid_price": live_mid if live_mid is not None else mark,
+                "mark_price": mark if mark is not None else live_mid,
                 "index_price": index,
                 "funding_rate": funding,
                 "timestamp": int(time.time() * 1000),
