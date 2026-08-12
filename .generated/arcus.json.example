@@ -1,5 +1,6 @@
 {
-  "private_key": "",
+  "api_key": "",
+  "api_secret": "",
   "address": "",
   "account_index": 0
 }

@@ -11,7 +11,7 @@
 | `hype.json` | Hyperliquid API Wallet |
 | `lighter.json` | Lighter API key pair |
 | `popdex.json` | PopDEX wallet + agent |
-| `arcus.json` | Arcus Ed25519 API key |
+| `arcus.json` | Arcus：`api_key` + `api_secret`（Ed25519）+ `address` |
 | `ondo.json` | Ondo key_id + api_secret |
 | `telegram.json` | 共用 bot_token / chat_id |
 | `twelvedata.json` | Twelve Data 免费 API key（估值曲线日线价格备用源） |

@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.exceptions import SSLError as Urllib3SSLError
+from urllib3.util.retry import Retry
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 TWELVE_URL = "https://api.twelvedata.com/time_series"
-UA = "FundRateBot/0.1 (localhost research; valuation pe)"
+# SEC 要求带可联系信息的 UA，否则易被断开/限流
+UA = "FundRateBot/0.1 (research; contact: fundrate-local@example.com)"
 CACHE_TTL = 20 * 3600  # 20h
 CACHE_VERSION = "v8-splits"
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +25,7 @@ CACHE_DIR = ROOT / "data" / "valuation"
 
 _ticker_map: Dict[str, Dict[str, Any]] = {}
 _ticker_map_at = 0.0
+_http: Optional[requests.Session] = None
 
 RANGE_DAYS = {
     "1y": 365,
@@ -31,15 +36,88 @@ RANGE_DAYS = {
 
 
 def _session() -> requests.Session:
+    global _http
+    if _http is not None:
+        return _http
     s = requests.Session()
     s.headers.update(
         {
             "User-Agent": UA,
             "Accept": "application/json,text/csv,*/*",
             "Accept-Encoding": "gzip, deflate",
+            # 避免复用被中间盒掐断的 keep-alive 连接触发 SSLEOF
+            "Connection": "close",
         }
     )
+    retry = Retry(
+        total=4,
+        connect=4,
+        read=4,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=4)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    _http = s
     return s
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            Urllib3SSLError,
+        ),
+    ):
+        return True
+    msg = str(exc).lower()
+    needles = (
+        "ssleoferror",
+        "unexpected_eof",
+        "connection reset",
+        "remotely closed",
+        "timed out",
+        "temporarily unavailable",
+        "max retries exceeded",
+    )
+    return any(n in msg for n in needles)
+
+
+def _sec_get(url: str, *, timeout: float = 60.0) -> requests.Response:
+    """带退避的 SEC GET；消化偶发 SSL EOF / 连接重置。"""
+    global _http
+    last: Optional[BaseException] = None
+    for attempt in range(5):
+        try:
+            resp = _session().get(url, timeout=timeout)
+            # 429/5xx 也退避
+            if resp.status_code in (429, 500, 502, 503, 504):
+                raise requests.exceptions.HTTPError(
+                    f"SEC HTTP {resp.status_code}", response=resp
+                )
+            resp.raise_for_status()
+            return resp
+        except Exception as e:
+            last = e
+            if not _is_transient_http_error(e) and not (
+                isinstance(e, requests.exceptions.HTTPError)
+                and getattr(e.response, "status_code", None) in (429, 500, 502, 503, 504)
+            ):
+                raise
+            if attempt >= 4:
+                break
+            # 换新 session，丢掉可能坏掉的连接池
+            _http = None
+            time.sleep(0.7 * (2**attempt))
+    assert last is not None
+    raise last
 
 
 def _ensure_cache_dir() -> Path:
@@ -56,8 +134,7 @@ def _load_ticker_map(force: bool = False) -> Dict[str, Dict[str, Any]]:
     now = time.time()
     if not force and _ticker_map and now - _ticker_map_at < CACHE_TTL:
         return _ticker_map
-    resp = _session().get(SEC_TICKERS_URL, timeout=30)
-    resp.raise_for_status()
+    resp = _sec_get(SEC_TICKERS_URL, timeout=30)
     raw = resp.json()
     out: Dict[str, Dict[str, Any]] = {}
     for item in raw.values() if isinstance(raw, dict) else raw:
@@ -184,8 +261,7 @@ def search_tickers(query: str, limit: int = 12) -> List[Dict[str, Any]]:
 
 def _fetch_sec_eps_points(cik: int) -> List[Dict[str, Any]]:
     url = SEC_FACTS_URL.format(cik=f"{int(cik):010d}")
-    resp = _session().get(url, timeout=60)
-    resp.raise_for_status()
+    resp = _sec_get(url, timeout=60)
     data = resp.json()
     us = ((data.get("facts") or {}).get("us-gaap") or {})
     node = us.get("EarningsPerShareDiluted") or us.get("EarningsPerShareBasic")

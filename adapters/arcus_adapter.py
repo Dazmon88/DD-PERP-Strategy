@@ -147,11 +147,15 @@ class ArcusAdapter(BasePerpAdapter):
         Args:
             config:
                 - exchange_name: arcus
-                - private_key / api_private_key: Ed25519 私钥 hex
+                - api_secret / api_private_key / private_key: Ed25519 API 签名私钥
+                - api_key / public_key: 可选，Ed25519 公钥（X-API-Key）；不填则由私钥推导
                 - address / wallet_id: 主钱包地址
                 - account_index: 子账户索引，默认 0
                 - network: mainnet | testnet | staging
                 - base_url / ws_url / timeout: 可选
+
+            日常交易只需 API Key 对 + address，无需主钱包私钥交互。
+            首次注册 API Key 才需要钱包 EIP-712（见 arcus_protocol.account.create_api_key）。
         """
         super().__init__(config)
 
@@ -160,9 +164,15 @@ class ArcusAdapter(BasePerpAdapter):
             raise ValueError("network 必须是 mainnet / testnet / staging")
 
         private_key = (
-            config.get("private_key")
+            config.get("api_secret")
             or config.get("api_private_key")
-            or config.get("api_secret")
+            or config.get("private_key")
+            or ""
+        ).strip()
+        api_key_cfg = (
+            config.get("api_key")
+            or config.get("apiKey")
+            or config.get("public_key")
             or ""
         ).strip()
         address = (
@@ -174,7 +184,10 @@ class ArcusAdapter(BasePerpAdapter):
         account_index = int(config.get("account_index", config.get("accountIndex", 0)))
 
         if not private_key:
-            raise ValueError("需要配置 private_key（Ed25519 API Key 私钥）")
+            raise ValueError(
+                "需要配置 api_secret（Ed25519 API 签名私钥）。"
+                "填写 .generated/arcus.json，字段: api_key / api_secret / address"
+            )
         if not address:
             raise ValueError("需要配置 address（主钱包地址）")
 
@@ -184,6 +197,11 @@ class ArcusAdapter(BasePerpAdapter):
             account_index=account_index,
             network=self.network,  # type: ignore[arg-type]
         )
+        if api_key_cfg and api_key_cfg.lower().lstrip("0x") != self.auth.api_key.lower():
+            raise ValueError(
+                "api_key 与 api_secret 不匹配（api_key 应为 Ed25519 公钥，"
+                "可由 api_secret 推导）"
+            )
         timeout = float(config.get("timeout", 15.0))
         self.http_client = ArcusPerpHTTP(
             base_url=config.get("base_url"),

@@ -1,10 +1,17 @@
 # Arcus 网格策略配置示例
-# 密钥请写在仓库根目录 .generated/arcus.json
+# 密钥请写在仓库根目录 .generated/arcus.json：
+#   {
+#     "api_key": "<Ed25519 公钥，可选，不填则由 api_secret 推导>",
+#     "api_secret": "<Ed25519 API 签名私钥>",
+#     "address": "<主钱包地址 0x...>",
+#     "account_index": 0
+#   }
+# 日常交易只需 API Key 对，不需要主钱包私钥。
+# 首次注册 API Key 才需钱包 EIP-712（见 arcus_protocol.account.create_api_key）。
+#
 # 用法:
 #   cd strategys/strategy_grid
 #   python grid_mm.py -c config_arcus.yaml -e arcus
-#
-# 首次需用主钱包 EIP-712 注册 API Key（见 arcus_protocol.account.create_api_key）
 
 exchanges:
   arcus:
