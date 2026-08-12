@@ -916,19 +916,27 @@ def main():
         print(f"休眠间隔: {sleep_interval} 秒\n")
         
         exchange_name = (EXCHANGE_CONFIG or {}).get("exchange_name", args.exchange) or ""
-        while True:
+        try:
+            while True:
+                try:
+                    run_strategy_cycle(adapter)
+                    try_send_balance_to_telegram(adapter, exchange_name)
+                    print(f"\n等待 {sleep_interval} 秒后继续...\n")
+                    time.sleep(sleep_interval)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    print(f"策略循环错误: {e}")
+                    print(f"等待 {sleep_interval} 秒后重试...\n")
+                    time.sleep(sleep_interval)
+        except KeyboardInterrupt:
+            print("\n\n收到 Ctrl+C，正在撤销所有未成交订单...")
             try:
-                run_strategy_cycle(adapter)
-                try_send_balance_to_telegram(adapter, exchange_name)
-                print(f"\n等待 {sleep_interval} 秒后继续...\n")
-                time.sleep(sleep_interval)
-            except KeyboardInterrupt:
-                print("\n\n策略已停止")
-                break
+                ok = adapter.cancel_all_orders(symbol=SYMBOL)
+                print(f"撤单完成: symbol={SYMBOL}, result={ok}")
             except Exception as e:
-                print(f"策略循环错误: {e}")
-                print(f"等待 {sleep_interval} 秒后重试...\n")
-                time.sleep(sleep_interval)
+                print(f"退出时撤单失败: {e}")
+            print("策略已停止")
         
     except Exception as e:
         print(f"错误: {e}")
