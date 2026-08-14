@@ -274,10 +274,10 @@ def generate_grid_arrays(
 
     mode:
       - neutral: 双边挂单（默认）；买卖间隔均为 price_step
-      - long: 只建多。buy 档数受剩余仓位空间限制；sell 档数 = floor(持仓 / order_quantity)，
-              且 sell 为只减仓（reduce_only），间隔 price_step * 2
-      - short: 只建空。sell 档数受剩余仓位空间限制；buy 档数 = floor(|持仓| / order_quantity)，
-               且 buy 为只减仓，间隔 price_step * 2
+      - long: 正常挂 buy（间隔 price_step）；仅持仓为正时按可平仓量挂 sell，
+              且 sell 间隔自动为 price_step * 2
+      - short: 正常挂 sell（间隔 price_step）；仅持仓为负时按可平仓量挂 buy，
+               且 buy 间隔自动为 price_step * 2
     """
     if price_step <= 0:
         raise ValueError("price_step 必须大于 0")
@@ -294,8 +294,6 @@ def generate_grid_arrays(
     current_price = float(current_price)
     pos = Decimal(str(signed_position_size))
     order_qty_decimal = Decimal(str(order_quantity))
-    max_multiplier_decimal = Decimal(str(max_position_multiplier))
-    max_position = order_qty_decimal * max_multiplier_decimal
 
     # 平仓侧间距 *2：long 时 widen sell；short 时 widen buy
     buy_step = float(price_step) * (2.0 if mode == "short" else 1.0)
@@ -304,49 +302,50 @@ def generate_grid_arrays(
     buy_ladder = build_price_ladder(lower_price, upper_price, buy_step)
     sell_ladder = build_price_ladder(lower_price, upper_price, sell_step)
 
+    # 按当前持仓动态调整多空数组个数
+    total_grid_count = grid_count * 2
+    long_count = grid_count
+    short_count = grid_count
+    try:
+        max_multiplier_decimal = Decimal(str(max_position_multiplier))
+        max_position = order_qty_decimal * max_multiplier_decimal
+        if max_position > 0:
+            utilization = float(pos / max_position)
+            utilization = max(-1.0, min(1.0, utilization))
+            bias = int(round(grid_count * utilization))
+            long_count = max(0, min(total_grid_count, grid_count - bias))
+            short_count = total_grid_count - long_count
+    except Exception:
+        # 参数异常时回退到默认对称网格
+        long_count = grid_count
+        short_count = grid_count
+
     long_candidates = [p for p in buy_ladder if p < current_price]
     short_candidates = [p for p in sell_ladder if p > current_price]
 
+    # long: 取离当前价最近的 N 个，按“近到远”输出
+    long_grid = list(reversed(long_candidates[-long_count:])) if long_count > 0 else []
+    # short: 取离当前价最近的 N 个，按“近到远”输出
+    short_grid = short_candidates[:short_count] if short_count > 0 else []
+
+    # 按模式裁剪平仓侧：可平仓档数 = floor(|pos| / order_quantity)
     if order_qty_decimal > 0:
         close_levels = int(abs(pos) // order_qty_decimal)
     else:
         close_levels = 0
 
     if mode == "long":
-        # 只建多：买档受剩余多仓空间限制；卖档 = 当前多仓可平档数（不走双边 bias）
-        remaining = max(Decimal("0"), max_position - max(pos, Decimal("0")))
-        if order_qty_decimal > 0 and max_position > 0:
-            long_count = min(grid_count, int(remaining // order_qty_decimal))
+        # 只建多；无多仓时不挂 sell，有多仓时 sell 不超过可平仓量
+        if pos <= 0:
+            short_grid = []
         else:
-            long_count = grid_count
-        short_count = close_levels if pos > 0 else 0
+            short_grid = short_grid[:close_levels]
     elif mode == "short":
-        remaining = max(Decimal("0"), max_position - max(-pos, Decimal("0")))
-        if order_qty_decimal > 0 and max_position > 0:
-            short_count = min(grid_count, int(remaining // order_qty_decimal))
+        # 只建空；无空仓时不挂 buy，有空仓时 buy 不超过可平仓量
+        if pos >= 0:
+            long_grid = []
         else:
-            short_count = grid_count
-        long_count = close_levels if pos < 0 else 0
-    else:
-        # neutral: 按持仓利用率把网格从买侧偏到卖侧
-        total_grid_count = grid_count * 2
-        long_count = grid_count
-        short_count = grid_count
-        try:
-            if max_position > 0:
-                utilization = float(pos / max_position)
-                utilization = max(-1.0, min(1.0, utilization))
-                bias = int(round(grid_count * utilization))
-                long_count = max(0, min(total_grid_count, grid_count - bias))
-                short_count = total_grid_count - long_count
-        except Exception:
-            long_count = grid_count
-            short_count = grid_count
-
-    # 买：离当前价最近的 N 个，按“近到远”
-    long_grid = list(reversed(long_candidates[-long_count:])) if long_count > 0 else []
-    # 卖：离当前价最近的 N 个，按“近到远”
-    short_grid = short_candidates[:short_count] if short_count > 0 else []
+            long_grid = long_grid[:close_levels]
 
     return long_grid, short_grid
 
@@ -505,16 +504,20 @@ def cancel_orders_by_prices(cancel_long, cancel_short, long_price_to_ids, short_
         print(f"撤单异常: {e}")
 
 
-def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity, mode="neutral"):
-    """根据价格列表下单。
-
-    long 模式的 sell / short 模式的 buy 使用 reduce_only，避免平仓单在暴涨/暴跌后翻成反向仓。
+def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
+    """根据价格列表下单
+    
+    Args:
+        place_long: 需要下单的做多价格列表
+        place_short: 需要下单的做空价格列表
+        adapter: 适配器实例
+        symbol: 交易对符号
+        quantity: 订单数量
     """
     if not place_long and not place_short:
         return
     
     quantity_decimal = Decimal(str(quantity))
-    mode = str(mode or "neutral").strip().lower()
     exchange_name = str(EXCHANGE_CONFIG.get("exchange_name", "")).lower() if EXCHANGE_CONFIG else ""
     # Lighter: gtc；PopDEX/Ondo: postonly；Arcus/Hype 等: alo
     if exchange_name == "lighter":
@@ -523,13 +526,9 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity, m
         limit_tif = "postonly"
     else:
         limit_tif = "alo"
-
-    buy_reduce_only = mode == "short"
-    sell_reduce_only = mode == "long"
     
     # 做多订单：buy
     for price in place_long:
-        tag = "平空" if buy_reduce_only else "多单"
         try:
             order = adapter.place_order(
                 symbol=symbol,
@@ -538,15 +537,14 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity, m
                 quantity=quantity_decimal,
                 price=Decimal(str(price)),
                 time_in_force=limit_tif,
-                reduce_only=buy_reduce_only
+                reduce_only=False
             )
-            print(f"[下单成功][{tag}] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
+            print(f"[下单成功][多单] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
         except Exception as e:
-            print(f"[下单失败][{tag}] 价格={price}, 数量={quantity_decimal}, 错误={e}")
+            print(f"[下单失败][多单] 价格={price}, 数量={quantity_decimal}, 错误={e}")
     
     # 做空订单：sell
     for price in place_short:
-        tag = "平多" if sell_reduce_only else "空单"
         try:
             order = adapter.place_order(
                 symbol=symbol,
@@ -555,11 +553,11 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity, m
                 quantity=quantity_decimal,
                 price=Decimal(str(price)),
                 time_in_force=limit_tif,
-                reduce_only=sell_reduce_only
+                reduce_only=False
             )
-            print(f"[下单成功][{tag}] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
+            print(f"[下单成功][空单] 价格={price}, 数量={quantity_decimal}, 订单ID={getattr(order, 'order_id', None)}")
         except Exception as e:
-            print(f"[下单失败][{tag}] 价格={price}, 数量={quantity_decimal}, 错误={e}")
+            print(f"[下单失败][空单] 价格={price}, 数量={quantity_decimal}, 错误={e}")
 
 
 def calculate_cancel_orders(target_long, target_short, current_long, current_short):
@@ -878,8 +876,7 @@ def run_strategy_cycle(adapter):
     
     # 执行下单
     place_orders_by_prices(
-        place_long, place_short, adapter, SYMBOL, GRID_CONFIG.get('order_quantity', 0.001),
-        mode=mode,
+        place_long, place_short, adapter, SYMBOL, GRID_CONFIG.get('order_quantity', 0.001)
     )
     
 
