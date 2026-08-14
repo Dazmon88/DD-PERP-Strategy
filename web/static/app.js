@@ -122,9 +122,9 @@
     rows.push(`<div class="eco-tip-row"><span>国家</span><strong>${country}</strong></div>`);
     rows.push(`<div class="eco-tip-row"><span>预期</span><strong>${escapeHtml(consensus || "—")}</strong></div>`);
     rows.push(`<div class="eco-tip-row"><span>前值</span><strong>${escapeHtml(previous || "—")}</strong></div>`);
-    if (actual) {
-      rows.push(`<div class="eco-tip-row actual"><span>公布</span><strong>${escapeHtml(actual)}</strong></div>`);
-    }
+    rows.push(
+      `<div class="eco-tip-row actual"><span>公布</span><strong>${escapeHtml(actual || "—")}</strong></div>`
+    );
     return `<div class="eco-tip" role="tooltip">${rows.join("")}</div>`;
   }
 
@@ -152,12 +152,20 @@
                   const isJp = String(ev.country_code || "").toUpperCase() === "JP";
                   const tag = isJp ? "JP" : "US";
                   const avatar = isJp ? "J" : "U";
+                  const actual = String(ev.actual || "").trim();
+                  const consensus = String(ev.consensus || "").trim();
+                  const printBadge = actual
+                    ? `<span class="badge-print has-actual">${escapeHtml(actual)}</span>`
+                    : consensus
+                      ? `<span class="badge-print">预期 ${escapeHtml(consensus)}</span>`
+                      : "";
                   return `<div class="event-row eco">
                     <span class="event-avatar macro ${isJp ? "jp" : "us"}">${avatar}</span>
                     <div class="event-main">
                       <span class="event-symbol macro-name">${escapeHtml(ev.name)}</span>
                       <div class="event-sub">
                         <span class="badge-mkt macro ${isJp ? "jp" : ""}">${tag}</span>
+                        ${printBadge}
                       </div>
                     </div>
                     <div class="event-tags">

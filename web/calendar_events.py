@@ -23,6 +23,8 @@ HEADERS = {
 }
 REQUEST_TIMEOUT = 12.0
 CACHE_TTL = 1800.0  # 30 min
+# 已过公布点但仍缺 actual 时，缩短缓存以便尽快拉到公布值
+CACHE_TTL_PENDING_ACTUAL = 90.0
 _FF_DISK = Path(__file__).resolve().parents[1] / "data" / "calendar" / "ff_align.json"
 
 # 财报无精确钟点时用美股惯例时刻（美东）
@@ -704,6 +706,31 @@ def _pick_earnings(items: List[Dict[str, Any]], perps: Set[str], limit: int = 6)
     return picked[:limit]
 
 
+def _has_pending_actual(payload: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
+    """已过公布时间（留 2 分钟缓冲）但仍无 actual 的数据类宏观（有预期/前值）。"""
+    now = now_ts if now_ts is not None else time.time()
+    for col in payload.get("columns") or []:
+        for ev in col.get("events") or []:
+            if ev.get("type") != "economic":
+                continue
+            actual = str(ev.get("actual") or "").strip()
+            if actual:
+                continue
+            # 演讲等无数字项的事件不会出 actual，不因此缩短缓存
+            has_print = str(ev.get("consensus") or "").strip() or str(
+                ev.get("previous") or ""
+            ).strip()
+            if not has_print:
+                continue
+            try:
+                ts = int(ev.get("sort_ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts and ts < now - 120:
+                return True
+    return False
+
+
 def fetch_week_calendar(
     *,
     perps_pairs: Optional[Set[str]] = None,
@@ -711,12 +738,15 @@ def fetch_week_calendar(
     days: Optional[List[date]] = None,
 ) -> Dict[str, Any]:
     now = time.time()
-    if not force and _cache["payload"] and now - _cache["at"] < CACHE_TTL:
-        # 仍用最新 perps 标记刷新 has_perps
-        payload = _cache["payload"]
-        if perps_pairs is not None:
-            return _retag(payload, perps_pairs)
-        return payload
+    if not force and _cache["payload"]:
+        age = now - _cache["at"]
+        pending = _has_pending_actual(_cache["payload"], now)
+        ttl = CACHE_TTL_PENDING_ACTUAL if pending else CACHE_TTL
+        if age < ttl:
+            payload = _cache["payload"]
+            if perps_pairs is not None:
+                return _retag(payload, perps_pairs)
+            return payload
 
     week = days or _week_days()
     perps = {p.upper() for p in (perps_pairs or set())}
