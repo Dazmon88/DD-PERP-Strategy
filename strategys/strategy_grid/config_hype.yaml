@@ -38,8 +38,33 @@ grid:
 
 risk:
   enable: false
-  adx_threshold: 16
-  adx_max: 60
+  interval: 4h
+  kline_limit: 72
+  adx:
+    enable: true
+    period: 14
+    flatten_gt: 30
+    double_gt: 25
+    double_lt: 30
+  rsi:
+    enable: true
+    period: 14
+    flatten_lt: 30
+    flatten_gt: 70
+    double_lt: 40
+    double_gt: 60
+
+schedule:
+  enable: false
+  timezone: Asia/Hong_Kong
+  blackout:
+    mon: []
+    tue: []
+    wed: []
+    thu: []
+    fri: []
+    sat: []
+    sun: []
 
 # Telegram 凭据也可放 .generated/telegram.json
 telegram:

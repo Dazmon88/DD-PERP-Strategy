@@ -35,6 +35,45 @@ grid:
 
 risk:
   enable: false
+  # 币安 K 线：15m / 1h / 4h 等
+  interval: 4h
+  kline_limit: 72
+  adx:
+    enable: true
+    period: 14
+    flatten_gt: 30          # ADX > 此值 → 撤单平仓
+    double_gt: 25           # double_gt < ADX < double_lt → 双倍间距
+    double_lt: 30
+  rsi:
+    enable: true
+    period: 14
+    flatten_lt: 30          # RSI < flatten_lt 或 > flatten_gt → 撤单平仓
+    flatten_gt: 70
+    double_lt: 40           # RSI < double_lt 或 > double_gt → 双倍间距
+    double_gt: 60
+
+schedule:
+  enable: false
+  timezone: Asia/Hong_Kong
+  # Hong Kong time. Multiple ranges per day. Empty list = no blackout that day.
+  blackout:
+    mon:
+      - "09:00-13:00"
+      - "20:30-23:59"
+    tue:
+      - "09:00-13:00"
+      - "20:30-23:59"
+    wed: 
+      - "09:00-13:00"
+      - "20:30-23:59"
+    thu: 
+      - "09:00-13:00"
+      - "20:30-23:59"
+    fri: 
+      - "09:00-13:00"
+      - "20:30-23:59"
+    sat: []
+    sun: []
 
 telegram:
   enable: false
