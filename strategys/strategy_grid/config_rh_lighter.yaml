@@ -1,0 +1,44 @@
+# Robinhood Chain 上的 Lighter（API 形状同 Lighter Core）
+# 文档: https://apidocs.rh.lighter.xyz/
+# 密钥请写在仓库根目录 .generated/rh_lighter.json：
+#   {
+#     "account_index": 0,
+#     "api_key_index": 2,
+#     "api_private_key": "0x..."
+#   }
+#
+# 用法:
+#   cd strategys/strategy_grid
+#   python grid_mm.py -c config_rh_lighter.yaml -e rh_lighter
+
+exchanges:
+  rh_lighter:
+    exchange_name: rh_lighter
+    network: robinhood
+    # 也可显式写（与 network=robinhood 等价）:
+    # base_url: "https://api.rh.lighter.xyz"
+    # chain_id: 466324   # L2 签名 domain，切勿写成 L1 的 4663
+    market_type: "perp"
+    auth_expiry_sec: 600
+    # RH 常见永续写法与 Lighter 相同，如 BTC-USDC / ETH-USDC
+    symbol: BTC-USDC
+
+grid:
+  mode: neutral
+  upper_price: 100000
+  lower_price: 10000
+  price_step: 30
+  grid_count: 5
+  order_quantity: 0.001
+  sleep_interval: 5
+  max_position_multiplier: 5
+
+risk:
+  enable: false
+
+telegram:
+  enable: false
+  interval_seconds: 3600
+  bot_token: ""
+  chat_id: ""
+  message_format: "[{exchange}余额] {balance}U (持仓价值 {position_value}U)"

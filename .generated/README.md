@@ -9,7 +9,8 @@
 | `standx.json` | StandX API Token / signing_key |
 | `grvt.json` | GRVT api_key / private_key |
 | `hype.json` | Hyperliquid API Wallet |
-| `lighter.json` | Lighter API key pair |
+| `lighter.json` | Lighter（zkLighter）API key pair |
+| `rh_lighter.json` | Robinhood Chain Lighter：同字段；`network=robinhood`，chain_id=466324 |
 | `popdex.json` | PopDEX wallet + agent |
 | `arcus.json` | Arcus：`api_key` + `api_secret`（Ed25519）+ `address` |
 | `ondo.json` | Ondo key_id + api_secret |

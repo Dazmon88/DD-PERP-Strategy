@@ -19,6 +19,7 @@ exchanges:
 
   lighter:
     exchange_name: lighter
+    # network: mainnet | testnet | robinhood（Robinhood Chain 请用 config_rh_lighter.yaml）
     base_url: "https://mainnet.zklighter.elliot.ai"
     market_type: "perp"
     auth_expiry_sec: 600

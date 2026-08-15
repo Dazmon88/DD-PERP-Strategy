@@ -18,12 +18,25 @@ _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
     "standx": StandXAdapter,
     "grvt": GrvtAdapter,
     "lighter": LighterAdapter,
+    # Robinhood Chain 上的 Lighter 实例（API: https://api.rh.lighter.xyz）
+    "rh_lighter": LighterAdapter,
+    "rhlighter": LighterAdapter,
+    "lighter_rh": LighterAdapter,
+    "robinhood_lighter": LighterAdapter,
     "hype": HypeAdapter,
     "popdex": PopDEXAdapter,
     "ondo": OndoAdapter,
     "ondoperp": OndoAdapter,
     "ondoperps": OndoAdapter,
     "arcus": ArcusAdapter,
+}
+
+# 创建前注入默认 network（adapter 也可从 exchange_name 推断）
+_NETWORK_DEFAULTS: Dict[str, str] = {
+    "rh_lighter": "robinhood",
+    "rhlighter": "robinhood",
+    "lighter_rh": "robinhood",
+    "robinhood_lighter": "robinhood",
 }
 
 
@@ -63,10 +76,15 @@ def create_adapter(config: Dict[str, Any]) -> BasePerpAdapter:
             f"支持的交易所: {available}"
         )
     
+    cfg = dict(config)
+    cfg["exchange_name"] = exchange_name
+    if exchange_name in _NETWORK_DEFAULTS and not cfg.get("network"):
+        cfg["network"] = _NETWORK_DEFAULTS[exchange_name]
+
     adapter_class = _ADAPTER_REGISTRY[exchange_name]
     
     try:
-        return adapter_class(config)
+        return adapter_class(cfg)
     except Exception as e:
         raise ValueError(f"创建适配器失败: {e}")
 

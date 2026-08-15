@@ -259,9 +259,12 @@ class SignerClient:
             account_index,
             api_private_keys: Dict[int, str],
             nonce_management_type=nonce_manager.NonceManagerType.OPTIMISTIC,
+            chain_id: Optional[int] = None,
     ):
         self.url = url
-        self.chain_id = 304 if "mainnet" in url else 300
+        from lighter.endpoint_profiles import resolve_chain_id
+
+        self.chain_id = resolve_chain_id(url=url, chain_id=chain_id)
 
         self.validate_api_private_keys(api_private_keys)
         self.api_key_dict = api_private_keys

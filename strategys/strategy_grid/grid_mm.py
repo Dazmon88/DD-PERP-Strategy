@@ -80,8 +80,14 @@ def convert_symbol_format(symbol, exchange_name):
             # 通用格式: BTC-USDT / BTC-USD -> BTC
             return symbol.split("-", 1)[0]
         return symbol
-    elif exchange_name == "lighter":
-        # Lighter 适配器内部会做 normalize（移除分隔符并大写），这里保持原样
+    elif exchange_name in (
+        "lighter",
+        "rh_lighter",
+        "rhlighter",
+        "lighter_rh",
+        "robinhood_lighter",
+    ):
+        # Lighter / RH-Lighter 适配器内部会做 normalize，这里保持原样
         return symbol
     elif exchange_name == "popdex":
         # PopDEX: BTC-USDT / BTC-USD -> BTCUSDT
@@ -180,6 +186,16 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
             EXCHANGE_CONFIG = merge_generated(EXCHANGE_CONFIG, "ondo")
         if active_exchange_name == "hyperliquid":
             EXCHANGE_CONFIG = merge_generated(EXCHANGE_CONFIG, "hype")
+        if active_exchange_name in (
+            "rh_lighter",
+            "rhlighter",
+            "lighter_rh",
+            "robinhood_lighter",
+        ):
+            # 可复用 lighter.json 里同结构密钥（仅填空字段）
+            EXCHANGE_CONFIG = merge_generated(
+                EXCHANGE_CONFIG, "lighter", only_empty=True
+            )
     except Exception as e:
         print(f"警告: 加载 .generated 密钥失败: {e}")
 
@@ -520,7 +536,13 @@ def place_orders_by_prices(place_long, place_short, adapter, symbol, quantity):
     quantity_decimal = Decimal(str(quantity))
     exchange_name = str(EXCHANGE_CONFIG.get("exchange_name", "")).lower() if EXCHANGE_CONFIG else ""
     # Lighter: gtc；PopDEX/Ondo: postonly；Arcus/Hype 等: alo
-    if exchange_name == "lighter":
+    if exchange_name in (
+        "lighter",
+        "rh_lighter",
+        "rhlighter",
+        "lighter_rh",
+        "robinhood_lighter",
+    ):
         limit_tif = "gtc"
     elif exchange_name in ("popdex", "ondo", "ondoperp", "ondoperps"):
         limit_tif = "postonly"
@@ -896,7 +918,7 @@ def main():
         '-e', '--exchange',
         type=str,
         required=True,
-        help='交易所名称，例如: standx、grvt、hype、lighter、popdex、ondo 或 arcus'
+        help='交易所名称，例如: standx、grvt、hype、lighter、rh_lighter、popdex、ondo 或 arcus'
     )
     args = parser.parse_args()
     

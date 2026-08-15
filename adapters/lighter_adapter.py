@@ -25,10 +25,27 @@ from adapters.base_adapter import BasePerpAdapter, Balance, Position, Order
 
 import lighter
 from lighter.ws_client import WsClient
+from lighter.endpoint_profiles import (
+    DEFAULT_ENDPOINT_PROFILE,
+    get_endpoint_profile,
+    resolve_profile_from_url,
+)
+
+
+def _resolve_lighter_network(config: Dict[str, Any]) -> str:
+    """从 network / exchange_name 解析 profile 名。"""
+    for key in ("network", "endpoint", "env"):
+        raw = config.get(key)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip().lower()
+    ex = str(config.get("exchange_name") or "lighter").strip().lower()
+    if ex in ("lighter", "zklighter"):
+        return "mainnet"
+    return ex
 
 
 class LighterAdapter(BasePerpAdapter):
-    """Lighter 交易所适配器实现"""
+    """Lighter 交易所适配器实现（支持 zkLighter 与 Robinhood Chain 实例）"""
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -36,9 +53,12 @@ class LighterAdapter(BasePerpAdapter):
 
         Args:
             config: 配置字典，必须包含：
-                - exchange_name: "lighter"
+                - exchange_name: "lighter" / "rh_lighter" 等
                 - account_index: 账户索引（账户级，非 API key）
-                - base_url: API 基础 URL（可选，默认 https://mainnet.zklighter.elliot.ai）
+                - network: 可选 mainnet|testnet|robinhood|robinhood_testnet
+                  （也可用 rh / rh_lighter 等别名；默认按 exchange_name）
+                - base_url: API 基础 URL（可选，默认随 network）
+                - chain_id: L2 签名 domain（可选，默认随 network；RH 主网为 466324）
                 - api_key_index: 使用的 API key index（API key 级，非账户）
                 - api_public_key: API 公钥（可选，当前仅记录）
                 - api_private_key: API 私钥（可选，下单需要）
@@ -48,7 +68,35 @@ class LighterAdapter(BasePerpAdapter):
         """
         super().__init__(config)
 
-        self.base_url = config.get("base_url", "https://mainnet.zklighter.elliot.ai")
+        self.network = _resolve_lighter_network(config)
+        try:
+            profile = get_endpoint_profile(self.network)
+        except ValueError:
+            # 允许只配 base_url 的自定义部署
+            profile = DEFAULT_ENDPOINT_PROFILE
+            url_profile = resolve_profile_from_url(str(config.get("base_url") or ""))
+            if url_profile is not None:
+                profile = url_profile
+                self.network = url_profile.name
+
+        self.base_url = str(
+            config.get("base_url") or profile.api_url
+        ).rstrip("/")
+        # 若显式 base_url 指向 RH 但 network 仍是 mainnet，按 URL 纠正 chain_id
+        url_profile = resolve_profile_from_url(self.base_url)
+        if url_profile is not None and "network" not in config and "endpoint" not in config:
+            # exchange_name 已映射到 network 时保留；仅当靠 URL 覆盖默认时更新
+            if self.network in ("mainnet", "testnet") and url_profile.name.startswith("robinhood"):
+                self.network = url_profile.name
+                profile = url_profile
+
+        if config.get("chain_id") is not None:
+            self.chain_id = int(config["chain_id"])
+        elif url_profile is not None:
+            self.chain_id = int(url_profile.chain_id)
+        else:
+            self.chain_id = int(profile.chain_id)
+
         self.account_index = config.get("account_index")
         if self.account_index is None:
             raise ValueError("配置中必须包含 account_index")
@@ -83,6 +131,7 @@ class LighterAdapter(BasePerpAdapter):
                     url=self.base_url,
                     account_index=int(self.account_index),
                     api_private_keys=api_private_keys,
+                    chain_id=self.chain_id,
                 )
 
             self._call_in_loop(_build_signer)
@@ -414,6 +463,10 @@ class LighterAdapter(BasePerpAdapter):
 
     def connect(self) -> bool:
         """连接到 Lighter 并完成认证"""
+        print(
+            f"Lighter 连接: network={self.network}, "
+            f"base_url={self.base_url}, chain_id={self.chain_id}"
+        )
         if self.signer_client:
             err = self.signer_client.check_client()
             if err:
