@@ -568,6 +568,28 @@ class ArcusAdapter(BasePerpAdapter):
                 account_index=self.account_index,
                 market_id=market_id,
             )
+            # 异步撮合：短暂等待后核对；有残留则按 openOrders 批量补撤
+            time.sleep(0.5)
+            left = self.get_open_orders(symbol=symbol)
+            if left:
+                ids = [o.order_id for o in left if o.order_id]
+                cloids = [
+                    o.client_order_id
+                    for o in left
+                    if not o.order_id and o.client_order_id
+                ]
+                if ids or cloids:
+                    self.cancel_orders_by_ids(
+                        order_id_list=ids or None,
+                        cl_ord_id_list=cloids or None,
+                    )
+                    time.sleep(0.3)
+                    left = self.get_open_orders(symbol=symbol)
+            if left:
+                raise Exception(
+                    f"仍有未撤销订单 {len(left)} 笔: "
+                    f"{[o.order_id or o.client_order_id for o in left]}"
+                )
             return True
         except Exception as e:
             raise Exception(f"全部撤单失败: {e}") from e

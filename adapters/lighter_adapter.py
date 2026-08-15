@@ -906,11 +906,20 @@ class LighterAdapter(BasePerpAdapter):
             return False
 
         market_id, order = result
+        return self._cancel_by_order_index(market_id, int(order.order_index))
+
+    def _cancel_by_order_index(self, market_id: int, order_index: int) -> bool:
+        if not self.signer_client:
+            raise Exception("未配置 API 私钥，无法撤单")
         _, response, error = self._run_async(
             self.signer_client.cancel_order(
-                market_index=market_id,
-                order_index=order.order_index,
-                api_key_index=self.api_key_index if self.api_key_index is not None else self.signer_client.DEFAULT_API_KEY_INDEX,
+                market_index=int(market_id),
+                order_index=int(order_index),
+                api_key_index=(
+                    self.api_key_index
+                    if self.api_key_index is not None
+                    else self.signer_client.DEFAULT_API_KEY_INDEX
+                ),
             )
         )
         if error:
@@ -919,33 +928,87 @@ class LighterAdapter(BasePerpAdapter):
             raise Exception(f"撤单失败: {getattr(response, 'message', '未知错误')}")
         return True
 
-    def cancel_all_orders(
-        self,
-        symbol: Optional[str] = None,
-    ) -> bool:
-        """撤销所有订单"""
+    def _send_cancel_all_immediate(self) -> bool:
+        """原生 CancelAll（IMMEDIATE）。timestamp_ms 必须为 0，否则会被当成定时撤单。"""
         if not self.signer_client:
             raise Exception("未配置 API 私钥，无法撤单")
-
-        if symbol:
-            open_orders = self.get_open_orders(symbol=symbol)
-            success = True
-            for order in open_orders:
-                if not self.cancel_order(order_id=order.order_id, symbol=symbol, client_order_id=order.client_order_id):
-                    success = False
-            return success
-
         _, response, error = self._run_async(
             self.signer_client.cancel_all_orders(
                 time_in_force=self.signer_client.CANCEL_ALL_TIF_IMMEDIATE,
-                timestamp_ms=int(time.time() * 1000),
-                api_key_index=self.api_key_index if self.api_key_index is not None else self.signer_client.DEFAULT_API_KEY_INDEX,
+                timestamp_ms=0,
+                api_key_index=(
+                    self.api_key_index
+                    if self.api_key_index is not None
+                    else self.signer_client.DEFAULT_API_KEY_INDEX
+                ),
             )
         )
         if error:
             raise Exception(f"批量撤单失败: {error}")
         if not response or getattr(response, "code", None) != 200:
             raise Exception(f"批量撤单失败: {getattr(response, 'message', '未知错误')}")
+        return True
+
+    def _cancel_open_orders_one_by_one(self, symbol: Optional[str] = None) -> bool:
+        """逐笔撤单兜底：一次拉齐 open orders，按 order_index 撤，避免每笔重复查询。"""
+        auth = self._get_auth_token()
+        if symbol:
+            market_ids = [self._get_market_meta(symbol)["market_id"]]
+        else:
+            if not self._market_by_id:
+                self._refresh_markets()
+            market_ids = list(self._market_by_id.keys())
+
+        success = True
+        for market_id in market_ids:
+            response = self._run_async(
+                self.order_api.account_active_orders(
+                    account_index=int(self.account_index),
+                    market_id=int(market_id),
+                    auth=auth,
+                )
+            )
+            for order in response.orders or []:
+                try:
+                    self._cancel_by_order_index(int(market_id), int(order.order_index))
+                except Exception as e:
+                    success = False
+                    print(
+                        f"逐笔撤单失败: market={market_id}, "
+                        f"order_index={getattr(order, 'order_index', None)}, error={e}"
+                    )
+        return success
+
+    def cancel_all_orders(
+        self,
+        symbol: Optional[str] = None,
+    ) -> bool:
+        """撤销所有订单。
+
+        优先走原生 cancel_all（全账户 IMMEDIATE）；再核对剩余挂单，必要时逐笔兜底。
+        注意：当前 vendored SDK 不支持按 market 限定 cancel_all，带 symbol 时仍先全撤再核对。
+        """
+        if not self.signer_client:
+            raise Exception("未配置 API 私钥，无法撤单")
+
+        self._send_cancel_all_immediate()
+        # 给 sequencer 一点时间落账
+        time.sleep(0.8)
+
+        remaining = self.get_open_orders(symbol=symbol)
+        if not remaining:
+            return True
+
+        print(
+            f"cancel_all 后仍剩 {len(remaining)} 笔，改用逐笔撤单兜底 "
+            f"(symbol={symbol or 'ALL'})"
+        )
+        self._cancel_open_orders_one_by_one(symbol=symbol)
+        time.sleep(0.5)
+        leftover = self.get_open_orders(symbol=symbol)
+        if leftover:
+            ids = [o.order_id for o in leftover]
+            raise Exception(f"仍有未撤销订单 {len(leftover)} 笔: {ids}")
         return True
 
     def _lighter_order_to_order(self, lighter_order: lighter.models.order.Order) -> Order:

@@ -961,7 +961,26 @@ def main():
             print("\n\n收到 Ctrl+C，正在撤销所有未成交订单...")
             try:
                 ok = adapter.cancel_all_orders(symbol=SYMBOL)
-                print(f"撤单完成: symbol={SYMBOL}, result={ok}")
+                # 核对是否还有残留（部分交易所 cancel_all 异步落账）
+                left = []
+                try:
+                    left = adapter.get_open_orders(symbol=SYMBOL) or []
+                except Exception as e:
+                    print(f"核对未成交订单失败: {e}")
+                if left:
+                    print(f"仍有 {len(left)} 笔未撤，重试 cancel_all...")
+                    ok = adapter.cancel_all_orders(symbol=SYMBOL)
+                    try:
+                        left = adapter.get_open_orders(symbol=SYMBOL) or []
+                    except Exception:
+                        left = []
+                if left:
+                    print(
+                        f"警告: 仍剩 {len(left)} 笔未成交: "
+                        f"{[getattr(o, 'order_id', None) for o in left]}"
+                    )
+                else:
+                    print(f"撤单完成: symbol={SYMBOL}, result={ok}")
             except Exception as e:
                 print(f"退出时撤单失败: {e}")
             print("策略已停止")
