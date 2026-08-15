@@ -27,9 +27,9 @@ grid:
   mode: neutral
   upper_price: 100000
   lower_price: 10000
-  price_step: 30
+  price_step: 20
   grid_count: 5
-  order_quantity: 0.001
+  order_quantity: 0.002
   sleep_interval: 5
   max_position_multiplier: 5
 

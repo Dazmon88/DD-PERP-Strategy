@@ -10,18 +10,18 @@ exchanges:
     network: mainnet
     timeout: 15
     # Ondo 市场名：AAPL-USD.P（策略会 normalize）
-    symbol: XAU-USD.P
+    symbol: CRCL-USD.P
 
 grid:
   # mode: neutral | long | short
-  mode: neutral
-  upper_price: 5000
-  lower_price: 3000
-  price_step: 5
-  grid_count: 5
-  order_quantity: 0.001
+  mode: long
+  upper_price: 80
+  lower_price: 60
+  price_step: 0.5
+  grid_count: 10
+  order_quantity: 1
   sleep_interval: 5
-  max_position_multiplier: 5
+  max_position_multiplier: 10
 
 risk:
   enable: false

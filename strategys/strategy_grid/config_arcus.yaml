@@ -23,15 +23,14 @@ exchanges:
 
 grid:
   # mode: neutral | long | short
-  mode: neutral
+  mode: long
   upper_price: 100000
   lower_price: 10000
-  price_step: 10
-  grid_count: 5
+  price_step: 50
+  grid_count: 10
   order_quantity: 0.001
-  # Arcus REST 按 IP 计 weight；openOrders=20，轮询过密易触发 Cloudflare 429
   sleep_interval: 15
-  max_position_multiplier: 5
+  max_position_multiplier: 10
 
 risk:
   enable: false

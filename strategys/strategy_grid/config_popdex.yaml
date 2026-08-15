@@ -15,15 +15,15 @@ exchanges:
 
 grid:
   # mode: neutral | long | short
-  mode: neutral
+  mode: long
   upper_price: 100000
   lower_price: 10000
-  price_step: 10
-  grid_count: 10
-  order_quantity: 0.002
+  price_step: 50
+  grid_count: 20
+  order_quantity: 0.001
   # 链上确认稍慢，建议 >= 5
   sleep_interval: 8
-  max_position_multiplier: 10
+  max_position_multiplier: 20
 
 risk:
   enable: false
