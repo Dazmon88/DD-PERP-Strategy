@@ -79,10 +79,12 @@ class OndoPerpStream:
         self.callbacks: Dict[str, Callable] = {}
         self.connected = False
         self.logged_in = False
+        self.last_error = ""
         self._connect_time: Optional[float] = None
         self.ping_interval_sec = ping_interval_sec
         self._ping_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
+        self.last_recv_ts: float = 0.0
 
     async def connect(self) -> None:
         try:
@@ -95,6 +97,7 @@ class OndoPerpStream:
             )
             self.connected = True
             self.logged_in = False
+            self.last_error = ""
             self._connect_time = time.time()
             self._recv_task = asyncio.create_task(self._receive_messages())
             self._ping_task = asyncio.create_task(self._ping_loop())
@@ -105,6 +108,7 @@ class OndoPerpStream:
     async def _receive_messages(self) -> None:
         try:
             async for message in self.ws:
+                self.last_recv_ts = time.time()
                 try:
                     if isinstance(message, (bytes, bytearray)):
                         message = message.decode("utf-8")
@@ -140,6 +144,9 @@ class OndoPerpStream:
         msg_type = data.get("type")
         if msg_type == "loggedIn":
             self.logged_in = True
+            self.last_error = ""
+        if msg_type == "error":
+            self.last_error = str(data.get("msg") or data)
         if msg_type and msg_type in self.callbacks:
             await self._invoke_callback(self.callbacks[msg_type], data)
 
@@ -216,14 +223,19 @@ class OndoPerpStream:
         auto_login: bool = True,
         **extra: Any,
     ) -> None:
-        """订阅私有频道；必要时自动 login。"""
+        """订阅私有频道；必要时自动 login。未登录成功则不订。"""
         if auto_login and not self.logged_in:
+            self.last_error = ""
             await self.login()
-            # 短暂等待 loggedIn（不阻塞太久）
-            for _ in range(20):
+            for _ in range(60):
                 if self.logged_in:
                     break
+                if self.last_error:
+                    break
                 await asyncio.sleep(0.05)
+            if not self.logged_in:
+                reason = self.last_error or "timeout"
+                raise RuntimeError(f"Ondo WSS login 失败: {reason}")
         await self.subscribe(
             channel, markets=markets, callback=callback, **extra
         )

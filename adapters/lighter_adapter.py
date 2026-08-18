@@ -99,8 +99,10 @@ class LighterAdapter(BasePerpAdapter):
 
         self.account_index = config.get("account_index")
         if self.account_index is None:
-            raise ValueError("配置中必须包含 account_index")
-        self.account_index = int(self.account_index)
+            # 公共行情 / 只读 WSS 可不配账户
+            self.account_index = 0
+        else:
+            self.account_index = int(self.account_index)
 
         self.market_type = str(config.get("market_type", "perp")).lower()
         self.auth_expiry_sec = int(config.get("auth_expiry_sec", 600))
@@ -505,10 +507,8 @@ class LighterAdapter(BasePerpAdapter):
             temp_order_api = lighter.OrderApi(temp_client)
             try:
                 details = await temp_order_api.order_books(filter=self.market_type)
-                market_map = {}
                 for market in details.order_books or []:
                     norm_symbol = self._normalize_symbol(market.symbol)
-                    market_map[norm_symbol] = market.market_id
                     meta = {
                         "symbol": market.symbol,
                         "market_id": market.market_id,
@@ -518,10 +518,10 @@ class LighterAdapter(BasePerpAdapter):
                     self._market_cache[norm_symbol] = meta
                     self._market_by_id[market.market_id] = meta
                 for sym in order_book_symbols:
-                    key = self._normalize_symbol(sym)
-                    if key not in market_map:
+                    key = self._resolve_market_key(sym)
+                    if key is None or key not in self._market_cache:
                         raise ValueError(f"未找到交易对: {sym}")
-                    order_book_ids.append(int(market_map[key]))
+                    order_book_ids.append(int(self._market_cache[key]["market_id"]))
             finally:
                 await temp_client.close()
 

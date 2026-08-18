@@ -19,6 +19,7 @@ grid:
   upper_price: 100000
   lower_price: 10000
   price_step: 50
+  close_step_mult: 2
   grid_count: 20
   order_quantity: 0.001
   # 链上确认稍慢，建议 >= 5

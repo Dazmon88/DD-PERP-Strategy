@@ -32,6 +32,7 @@ grid:
   upper_price: 100000
   lower_price: 10000
   price_step: 30
+  close_step_mult: 2
   grid_count: 5
   order_quantity: 0.001
   sleep_interval: 5

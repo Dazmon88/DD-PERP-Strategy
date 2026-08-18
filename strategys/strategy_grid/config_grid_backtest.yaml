@@ -1,0 +1,58 @@
+# 网格方案回测（币安 K 线，本地算 ADX/RSI/+DI/-DI）
+#
+# strategies 可配多套，跑完按总盈亏对照。
+#   mode: long | short | neutral | adaptive
+#   close_step_mult: 平仓侧间距倍数（long 时卖、short 时买）
+#   buy_step_mult / sell_step_mult: 可选，直接指定买卖倍数
+#
+# 用法（仓库根目录）:
+#   python strategys/strategy_grid/grid_backtest.py -c strategys/strategy_grid/config_grid_backtest.yaml
+#
+# 无本地 CSV 时会从币安拉 K 线（不占交易所交易 API）。
+
+backtest:
+  symbol: BTCUSDT
+  interval: 1h
+  days: 30
+  csv: ""                    # 若填写则用本地 OHLCV（列 date,open,high,low,close,volume）
+  initial_cash: 10000
+  maker_fee: 0.0002          # 网格限价成交
+  taker_fee: 0.0005          # flatten 市价
+  flatten_on_flip: true      # adaptive long↔short 先平仓再翻向
+
+grid:
+  upper_price: 200000
+  lower_price: 10000
+  price_step: 30
+  grid_count: 8
+  order_quantity: 0.001
+  max_position_multiplier: 8
+  close_step_mult: 1         # strategies 未写 close_step_mult 时的默认值
+
+strategies:
+  - name: long_x2
+    mode: long
+    close_step_mult: 2
+  - name: long_x1
+    mode: long
+    close_step_mult: 1
+  - name: short_x2
+    mode: short
+    close_step_mult: 2
+  - name: short_x1
+    mode: short
+    close_step_mult: 1
+  - name: neutral
+    mode: neutral
+    close_step_mult: 1
+  - name: adaptive
+    mode: adaptive
+    close_step_mult: 1
+
+regime:
+  adx_period: 14
+  rsi_period: 14
+  adx_flatten: 30            # ADX > 此值 → flatten（仅 adaptive）
+  adx_range: 25              # ADX < 此值 → 震荡（再用 RSI/DI 分方向）
+  rsi_up: 55                 # 震荡偏多
+  rsi_down: 45               # 震荡偏空

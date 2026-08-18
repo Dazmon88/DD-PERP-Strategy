@@ -106,7 +106,7 @@ REST 请求头（以官方「API Key Authentication」为准）：
 
 - JWT：`{"op":"login","args":{"token":"<JWT>"}}`
 - API Key：`{"op":"login","args":{"key","time","sign"}}`  
-  签名：`HMAC-SHA256(secret, "ondo_perps_ws_login" + time)`（以官方 login 文档为准）
+  签名：`HMAC-SHA256(secret, time + "ondo_perps_ws_login")`（与 login 页一致；实盘已验证）
 
 心跳：`{"op":"ping"}` → `{"type":"pong"}`；空闲约 **180s** 断开。  
 限速：约 25 req/s（burst 50）；消息最大约 32KB。

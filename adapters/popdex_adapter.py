@@ -360,6 +360,8 @@ class PopDEXAdapter(BasePerpAdapter):
 
         side_str = _map_side(side)
         tif = _map_tif(time_in_force)
+        if kwargs.get("post_only") or kwargs.get("postOnly"):
+            tif = "postonly"
         try:
             symbol_id, symbol_name = self._resolve_symbol_id(symbol)
             result = self.http_client.place_order_onchain(

@@ -250,6 +250,13 @@ def initialize_config(config_file="config.yaml", active_exchange_override=None):
             TELEGRAM_CONFIG[k] = os.getenv(v[2:-1], "").strip()
 
 
+def _optional_step_mult(value):
+    """yaml 未填或空字符串 → None，否则转 float。"""
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
 def get_price_precision(price_step):
     """根据 price_step 推断价格小数位数。"""
     step_decimal = Decimal(str(price_step)).normalize()
@@ -303,15 +310,20 @@ def generate_grid_arrays(
     lower_price=None,
     upper_price=None,
     mode="neutral",
+    close_step_mult=2.0,
+    buy_step_mult=None,
+    sell_step_mult=None,
 ):
     """从价格梯子中围绕当前价生成多空数组，并按持仓动态调整多空比例。
 
     mode:
       - neutral: 双边挂单（默认）；买卖间隔均为 price_step
       - long: 正常挂 buy（间隔 price_step）；仅持仓为正时按可平仓量挂 sell，
-              且 sell 间隔自动为 price_step * 2
+              sell 间隔 = price_step * close_step_mult（默认 2）
       - short: 正常挂 sell（间隔 price_step）；仅持仓为负时按可平仓量挂 buy，
-               且 buy 间隔自动为 price_step * 2
+              buy 间隔 = price_step * close_step_mult（默认 2）
+
+    buy_step_mult / sell_step_mult: 可选，直接指定买卖倍数，覆盖 mode 默认。
     """
     if price_step <= 0:
         raise ValueError("price_step 必须大于 0")
@@ -328,10 +340,29 @@ def generate_grid_arrays(
     current_price = float(current_price)
     pos = Decimal(str(signed_position_size))
     order_qty_decimal = Decimal(str(order_quantity))
+    close_mult = float(close_step_mult if close_step_mult is not None else 2.0)
+    if close_mult <= 0:
+        raise ValueError("close_step_mult 必须大于 0")
 
-    # 平仓侧间距 *2：long 时 widen sell；short 时 widen buy
-    buy_step = float(price_step) * (2.0 if mode == "short" else 1.0)
-    sell_step = float(price_step) * (2.0 if mode == "long" else 1.0)
+    if buy_step_mult is not None:
+        buy_mult = float(buy_step_mult)
+    elif mode == "short":
+        buy_mult = close_mult
+    else:
+        buy_mult = 1.0
+
+    if sell_step_mult is not None:
+        sell_mult = float(sell_step_mult)
+    elif mode == "long":
+        sell_mult = close_mult
+    else:
+        sell_mult = 1.0
+
+    if buy_mult <= 0 or sell_mult <= 0:
+        raise ValueError("buy_step_mult / sell_step_mult 必须大于 0")
+
+    buy_step = float(price_step) * buy_mult
+    sell_step = float(price_step) * sell_mult
 
     buy_ladder = build_price_ladder(lower_price, upper_price, buy_step)
     sell_ladder = build_price_ladder(lower_price, upper_price, sell_step)
@@ -1146,11 +1177,15 @@ def run_strategy_cycle(adapter):
         lower_price=GRID_CONFIG.get('lower_price'),
         upper_price=GRID_CONFIG.get('upper_price'),
         mode=mode,
+        close_step_mult=GRID_CONFIG.get('close_step_mult', 2),
+        buy_step_mult=_optional_step_mult(GRID_CONFIG.get('buy_step_mult')),
+        sell_step_mult=_optional_step_mult(GRID_CONFIG.get('sell_step_mult')),
     )
     max_position = order_quantity * Decimal(str(max_position_multiplier))
     print(
         f"网格动态分配: mode={mode}, signed_position={signed_position}, "
-        f"max_position={max_position}, long_count={len(long_grid)}, short_count={len(short_grid)}"
+        f"max_position={max_position}, long_count={len(long_grid)}, short_count={len(short_grid)}, "
+        f"close_step_mult={GRID_CONFIG.get('close_step_mult', 2)}"
     )
     print(f"做多数组: {long_grid}")
     print(f"做空数组: {short_grid}")

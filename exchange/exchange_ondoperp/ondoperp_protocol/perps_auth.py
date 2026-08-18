@@ -116,12 +116,13 @@ class OndoPerpAuth:
         """
         WSS login args（API Key）。
 
-        官方 OpenAPI：HMAC-SHA256(secret, \"ondo_perps_ws_login\" + time)
+        官方 login 页：HMAC-SHA256(secret, time + \"ondo_perps_ws_login\")
+        OpenAPI 页头里的 prefix+time 与实盘不符，实盘校验为 time+prefix。
         """
         if not self.has_api_key:
             raise ValueError("WSS API Key login 需要 key_id 与 api_secret")
         ts = timestamp or self.timestamp_ms()
-        msg = f"{WS_LOGIN_PREFIX}{ts}"
+        msg = f"{ts}{WS_LOGIN_PREFIX}"
         sig = hmac.new(
             self.api_secret.encode("utf-8"),
             msg.encode("utf-8"),

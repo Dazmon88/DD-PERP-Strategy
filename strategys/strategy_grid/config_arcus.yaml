@@ -16,7 +16,7 @@
 exchanges:
   arcus:
     exchange_name: arcus
-    network: testnet
+    network: mainnet
     timeout: 15
     # Arcus 市场名：BTC-USD（也可用 BTC / BTCUSDT，策略会 normalize）
     symbol: BTC-USD
@@ -27,6 +27,8 @@ grid:
   upper_price: 100000
   lower_price: 10000
   price_step: 50
+  # 平仓侧间距倍数：long 时 sell = price_step * close_step_mult；short 时 buy 同理。默认 2
+  close_step_mult: 2
   grid_count: 10
   order_quantity: 0.001
   sleep_interval: 15
