@@ -16,6 +16,7 @@ class AccountSnap:
     pos_symbol: str = ""
     source: str = ""
     ts: float = 0.0
+    balance_ts: float = 0.0
     error: str = ""
 
 
@@ -26,6 +27,7 @@ class AccountBook:
 
     async def patch(self, snap: AccountSnap) -> None:
         async with self._lock:
+            incoming_balance = snap.equity is not None or snap.available is not None
             prev = self._data.get(snap.venue)
             if prev is not None and not snap.error:
                 if snap.equity is None:
@@ -38,6 +40,10 @@ class AccountBook:
                         snap.pos_symbol = prev.pos_symbol
                 if not snap.source:
                     snap.source = prev.source
+            if incoming_balance:
+                snap.balance_ts = float(snap.ts or time.time())
+            elif prev is not None:
+                snap.balance_ts = float(prev.balance_ts or 0.0)
             self._data[snap.venue] = snap
 
     async def snapshot(self) -> Dict[str, AccountSnap]:
@@ -160,29 +166,51 @@ def _symbol_match(have: str, want: str) -> bool:
     return a.startswith(b) or b.startswith(a)
 
 
+def _pick_money(*layers: Dict[str, Any], keys: tuple[str, ...]) -> Optional[float]:
+    found: Optional[float] = None
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        val = _pick_float(layer, *keys)
+        if val is None:
+            continue
+        if found is None:
+            found = val
+        if abs(val) > 1e-12:
+            return val
+    return found
+
+
 def parse_lighter_user_stats(payload: Any) -> Dict[str, Optional[float]]:
+    """user_stats：净值用 portfolio_value，可用用 available_balance。"""
     data = payload if isinstance(payload, dict) else {}
     stats = data.get("stats") or data.get("user_stats") or data
     if not isinstance(stats, dict):
         stats = {}
-    nested = stats.get("total_stats") if isinstance(stats.get("total_stats"), dict) else {}
-    merged = {**nested, **stats}
+    total = stats.get("total_stats") if isinstance(stats.get("total_stats"), dict) else {}
+    cross = stats.get("cross_stats") if isinstance(stats.get("cross_stats"), dict) else {}
     return {
-        "equity": _pick_float(
-            merged, "portfolio_value", "total_asset_value", "collateral"
+        "equity": _pick_money(
+            stats, total, cross, data, keys=("portfolio_value", "total_asset_value", "collateral")
         ),
-        "available": _pick_float(merged, "available_balance", "buying_power"),
+        "available": _pick_money(
+            stats, total, cross, data, keys=("available_balance", "buying_power")
+        ),
     }
 
 
 def parse_lighter_account(payload: Any) -> Dict[str, Optional[float]]:
     data = payload if isinstance(payload, dict) else {}
     account = data.get("account") if isinstance(data.get("account"), dict) else data
+    if not isinstance(account, dict):
+        account = data
     return {
-        "equity": _pick_float(
-            account, "total_asset_value", "collateral", "portfolio_value"
+        "equity": _pick_money(
+            account, data, keys=("portfolio_value", "total_asset_value", "collateral")
         ),
-        "available": _pick_float(account, "available_balance", "buying_power"),
+        "available": _pick_money(
+            account, data, keys=("available_balance", "buying_power")
+        ),
     }
 
 

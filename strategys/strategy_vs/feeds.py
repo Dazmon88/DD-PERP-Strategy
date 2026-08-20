@@ -15,7 +15,6 @@ from accounts import (  # noqa: E402
     AccountBook,
     AccountSnap,
     from_adapter_balance,
-    parse_lighter_account,
     parse_lighter_positions,
     parse_lighter_user_stats,
     parse_ondo_balance,
@@ -307,11 +306,12 @@ async def _account_rest_loop(
                 pass
         first = False
         snap = (await accounts.snapshot()).get(venue)
+        bal_ts = float(getattr(snap, "balance_ts", 0.0) or 0.0) if snap else 0.0
         if (
             snap
             and not snap.error
-            and snap.ts
-            and (time.time() - snap.ts) < stale_sec
+            and bal_ts
+            and (time.time() - bal_ts) < stale_sec
             and (snap.source or "").lower() == "wss"
         ):
             continue
@@ -394,16 +394,16 @@ async def _run_lighter(
         )
 
     def on_account_update(_account_id, payload):
+        """account_all：只更新仓位，与 Ondo positions 一致。"""
         if accounts is None or stop.is_set():
             return
-        parsed = parse_lighter_account(payload)
         pos_qty = parse_lighter_positions(payload, symbol)
+        if pos_qty is None:
+            return
         loop.create_task(
             accounts.patch(
                 AccountSnap(
                     venue=venue,
-                    equity=parsed["equity"],
-                    available=parsed["available"],
                     pos_qty=pos_qty,
                     pos_symbol=symbol,
                     source="wss",
@@ -413,9 +413,12 @@ async def _run_lighter(
         )
 
     def on_user_stats_update(_account_id, payload):
+        """user_stats：只更新净值/可用，与 Ondo balance 一致。"""
         if accounts is None or stop.is_set():
             return
         parsed = parse_lighter_user_stats(payload)
+        if parsed["equity"] is None and parsed["available"] is None:
+            return
         loop.create_task(
             accounts.patch(
                 AccountSnap(

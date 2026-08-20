@@ -525,10 +525,13 @@ class LighterAdapter(BasePerpAdapter):
             finally:
                 await temp_client.close()
 
-        if account_orders_ids and not auth_token:
-            if not self.signer_client:
-                raise Exception("未配置 API 私钥，无法生成 auth token")
-            auth_token = self._get_auth_token()
+        if not auth_token:
+            if account_orders_ids:
+                if not self.signer_client:
+                    raise Exception("未配置 API 私钥，无法生成 auth token")
+                auth_token = self._get_auth_token()
+            elif user_stats_ids and self.signer_client:
+                auth_token = self._get_auth_token()
 
         return self.init_ws_client(
             order_book_ids=order_book_ids,

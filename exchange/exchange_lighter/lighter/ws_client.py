@@ -124,11 +124,13 @@ class WsClient:
                 )
             )
         for account_id in self.subscriptions["user_stats"]:
-            ws.send(
-                json.dumps(
-                    {"type": "subscribe", "channel": f"user_stats/{account_id}"}
-                )
-            )
+            payload = {
+                "type": "subscribe",
+                "channel": f"user_stats/{account_id}",
+            }
+            if self.auth_token:
+                payload["auth"] = self.auth_token
+            ws.send(json.dumps(payload))
 
     async def handle_connected_async(self, ws):
         for market_id in self.subscriptions["order_books"]:
@@ -154,11 +156,13 @@ class WsClient:
                 )
             )
         for account_id in self.subscriptions["user_stats"]:
-            await ws.send(
-                json.dumps(
-                    {"type": "subscribe", "channel": f"user_stats/{account_id}"}
-                )
-            )
+            payload = {
+                "type": "subscribe",
+                "channel": f"user_stats/{account_id}",
+            }
+            if self.auth_token:
+                payload["auth"] = self.auth_token
+            await ws.send(json.dumps(payload))
 
     def handle_subscribed_order_book(self, message):
         market_id = message["channel"].split(":")[1]
