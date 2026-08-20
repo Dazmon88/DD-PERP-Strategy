@@ -232,29 +232,24 @@ class PositionLedger:
         for cloid in list(self.orders):
             self.on_reject(cloid, reason)
 
-    def _hedge_tol(self) -> float:
-        """净敞口容差：半层内视为对锁（允许部分成交零头）。"""
-        return max(self.pos_tolerance, self.qty_per_layer * 0.5)
-
     def _hedge_from_exchange(
         self, pos_a: float, pos_b: float
     ) -> Optional[Tuple[float, float]]:
-        """两所仓对锁（含空仓）则返回实际仓；否则 None。
-
-        对锁：|A+B| ≤ 半层，且两侧异号或一侧为空。
-        层数由 lots = round(pos_a / qty) 按实际仓计算，不再要求 qty 整数倍。
-        """
+        """两所仓是整数层对锁（含空仓）则对齐到层量，否则 None。"""
         qa, qb = float(pos_a), float(pos_b)
         tol = self.pos_tolerance
-        hedge_tol = self._hedge_tol()
+        qty = self.qty_per_layer
         if abs(qa) <= tol and abs(qb) <= tol:
             return 0.0, 0.0
-        if abs(qa + qb) > hedge_tol:
+        n_a = int(round(qa / qty))
+        n_b = int(round(qb / qty))
+        aligned_a = n_a * qty
+        aligned_b = n_b * qty
+        if abs(qa - aligned_a) > tol or abs(qb - aligned_b) > tol:
             return None
-        # 同向且都显著：不是对锁
-        if abs(qa) > tol and abs(qb) > tol and qa * qb > 0:
+        if n_a + n_b != 0:
             return None
-        return qa, qb
+        return aligned_a, aligned_b
 
     def _mark_ok(self, note: str = "") -> None:
         self.accounts_ready = True
