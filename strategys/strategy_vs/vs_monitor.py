@@ -833,6 +833,8 @@ async def _print_loop(
     last_recon = 0.0
     last_layer = ""
     hedge_busy = False
+    last_align = 0.0          # 后台敞口守护上次下单时间
+    align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
     order_task: Optional[asyncio.Task] = None
     pending_log: Optional[Dict[str, Any]] = None
     combined = CombinedPnl()
@@ -899,6 +901,32 @@ async def _print_loop(
                     n = abs(ledger.lots)
                     if n and grid.peak_n < n:
                         grid.peak_n = n
+
+            # 后台敞口守护：不论对账是否失败，只要 A+B 敞口超过容差就补 A
+            # hedge_busy 时跳过（网格 execute 自己对齐），冷却 align_cooldown_sec
+            if (
+                live
+                and hedge is not None
+                and not hedge_busy
+                and not ledger.inflight
+                and ledger.accounts_ready
+                and now - last_align >= align_cooldown
+            ):
+                stale_sec = float(vs_cfg.get("account_stale_sec", 15.0))
+                pos_a_raw, _ = _acct_pos(acct.get("a"), now, stale_sec)
+                pos_b_raw, _ = _acct_pos(acct.get("b"), now, stale_sec)
+                if pos_a_raw is not None and pos_b_raw is not None:
+                    _pa = Decimal(str(pos_a_raw))
+                    _pb = Decimal(str(pos_b_raw))
+                    _target = -_pb
+                    _tol = max(Decimal(str(ledger.qty_per_layer)) * Decimal("0.05"), Decimal("1e-8"))
+                    if abs(_pa - _target) > _tol:
+                        if hedge.qty_per_layer <= 0:
+                            hedge.qty_per_layer = ledger.qty_per_layer
+                        _ok, _msg = hedge.align_a_only(_target)
+                        last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
+                        last_align = now
+
             _clear_tty()
             text, tick, quotes_ok = _render(
                 vs_cfg=vs_cfg,

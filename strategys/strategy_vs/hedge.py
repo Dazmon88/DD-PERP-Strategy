@@ -203,6 +203,7 @@ class DualLegBroker:
         self._pos_lookup = pos_lookup
         self._bbo_lookup = bbo_lookup
         self._rest_ok = rest_ok
+        self.qty_per_layer: float = 0.0
 
     def _pos(self, which: str) -> Decimal:
         if self._pos_lookup is not None:
@@ -477,6 +478,33 @@ class DualLegBroker:
         result.a.order_id = oid or result.a.order_id
         result.logs.append(f"A {label} {side} {qty} target={target_a:+.8f} id={oid}")
         return True
+
+    def align_a_only(self, target_a: Decimal) -> tuple[bool, str]:
+        """仅对齐 A 仓位到 target_a，不触碰账本层逻辑（用于后台敞口守护）。
+
+        返回 (已对齐, 日志消息)。
+        已对齐 = 当前仓位已在容差内（或下单成功）。
+        """
+        pos_a = self._pos("a")
+        qty = Decimal(str(getattr(self, "qty_per_layer", None) or 0))
+        if qty <= 0:
+            return False, "qty_per_layer 未初始化"
+        tol = max(qty * Decimal("0.05"), Decimal("1e-8"))
+        gap = target_a - pos_a
+        if abs(gap) <= tol:
+            return True, f"A 已对齐 pos={pos_a:+.8f} target={target_a:+.8f}"
+        side = "buy" if gap > 0 else "sell"
+        order, err = _place_taker(
+            self.adapter_a,
+            symbol=self.symbol_a,
+            side=side,
+            qty=abs(gap),
+            reduce_only=False,
+        )
+        if err:
+            return False, f"A 对齐失败 {side} {abs(gap)} err={err}"
+        oid = str(getattr(order, "order_id", "") or "")
+        return True, f"A 对齐 {side} {abs(gap)} target={target_a:+.8f} id={oid}"
 
     def _fail_empty(self, delta: int, error: str) -> LayerResult:
         zero = Decimal("0")

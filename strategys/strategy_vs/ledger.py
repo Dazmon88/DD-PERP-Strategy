@@ -233,8 +233,8 @@ class PositionLedger:
             self.on_reject(cloid, reason)
 
     def _hedge_tol(self) -> float:
-        """净敞口容差：半层内视为对锁（允许部分成交零头）。"""
-        return max(self.pos_tolerance, self.qty_per_layer * 0.5)
+        """净敞口容差：整层内视为对锁（允许 A/B 差最多一层的零头）。"""
+        return max(self.pos_tolerance, self.qty_per_layer * 1.0)
 
     def _hedge_from_exchange(
         self, pos_a: float, pos_b: float
