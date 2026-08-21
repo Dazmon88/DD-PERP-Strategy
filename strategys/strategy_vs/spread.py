@@ -256,6 +256,9 @@ class SpreadGrid:
     def desired_lots(self, ab_pct: float, ba_pct: float, current_lots: int) -> int:
         if not self.ready or self.lower is None or self.upper is None:
             return 0
+        # 超限：只收到 ±max_lots，不继续加、不借机反向新开
+        if abs(int(current_lots)) > self.max_lots:
+            return (1 if current_lots > 0 else -1) * self.max_lots
         n = abs(int(current_lots))
         if n == 0:
             edge, sign = self._hold_edge(ab_pct, ba_pct, 0)

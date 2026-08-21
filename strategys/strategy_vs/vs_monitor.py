@@ -380,14 +380,25 @@ def _execute_layer(
 
 
 def _tick_journal_kwargs(tick: Optional[GridTick], **extra: Any) -> Dict[str, Any]:
+    delta = int(extra.get("delta") or getattr(tick, "delta", 0) or 0)
+    ab = getattr(tick, "ab_pct", None)
+    ba = getattr(tick, "ba_pct", None)
+    # 本次下单方向对应净价差
+    if delta > 0:
+        edge = ab
+    elif delta < 0:
+        edge = ba
+    else:
+        edge = getattr(tick, "mag", None)
     out: Dict[str, Any] = {
         "mag": getattr(tick, "mag", None),
         "lower": getattr(tick, "lower", None),
         "upper": getattr(tick, "upper", None),
         "center": getattr(tick, "center", None),
         "cost": getattr(tick, "cost", None),
-        "ab_pct": getattr(tick, "ab_pct", None),
-        "ba_pct": getattr(tick, "ba_pct", None),
+        "ab_pct": ab,
+        "ba_pct": ba,
+        "edge_pct": edge,
         "note": getattr(tick, "note", "") or "",
     }
     out.update(extra)
@@ -709,6 +720,11 @@ def _render(
             + (f"  在途{snap.pending}" if snap.pending else "")
             + ("" if (snap.can_open and not hedge_busy) else _c("33", "  禁开"))
             + (_c("33", "  只平") if snap.state == "reconcile_fail" else "")
+            + (
+                _c("33", "  超限只平")
+                if ledger is not None and ledger.over_max_lots()
+                else ""
+            )
         )
         exp_a = snap.exp_a
         exp_b = snap.exp_b
@@ -794,6 +810,7 @@ async def _print_loop(
         qty_per_layer=lcfg["qty"],
         pos_tolerance=lcfg["pos_tolerance"],
         live=live,
+        max_lots=gcfg["max_lots"],
     )
     sim = None if live else SimBroker(
         fill_delay_sec=lcfg["fill_delay_sec"],

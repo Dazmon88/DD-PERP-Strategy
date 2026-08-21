@@ -79,10 +79,12 @@ class PositionLedger:
         qty_per_layer: float,
         pos_tolerance: float = 1e-7,
         live: bool = False,
+        max_lots: int = 5,
     ) -> None:
         self.qty_per_layer = max(1e-12, float(qty_per_layer))
         self.pos_tolerance = float(pos_tolerance)
         self.live = bool(live)
+        self.max_lots = max(1, int(max_lots))
         self.pos_a = 0.0
         self.pos_b = 0.0
         self.exch_a0: Optional[float] = None
@@ -123,16 +125,45 @@ class PositionLedger:
 
     def is_reduce(self, delta: int) -> bool:
         lots = self.lots
-        return lots != 0 and int(delta) * lots < 0
+        if lots != 0 and int(delta) * lots < 0:
+            return True
+        # 账本空但交易所已有仓：delta 与所仓异号视为只平
+        ea = self.last_exch_a
+        if ea is not None and abs(ea) > self.pos_tolerance and int(delta) * ea < 0:
+            return True
+        return False
+
+    def over_max_lots(self) -> bool:
+        if abs(self.lots) > self.max_lots:
+            return True
+        ea = self.last_exch_a
+        if ea is None:
+            return False
+        max_qty = self.max_lots * self.qty_per_layer
+        return abs(ea) >= max_qty - self.pos_tolerance
+
+    def _exch_blocks_add(self, delta: int) -> bool:
+        """交易所仓已达/超 max_lots，且 delta 同向加仓 → 挡。"""
+        ea = self.last_exch_a
+        if ea is None:
+            return False
+        max_qty = self.max_lots * self.qty_per_layer
+        if abs(ea) < max_qty - self.pos_tolerance:
+            return False
+        return ea * int(delta) > 0
 
     def can_submit(self, delta: int) -> bool:
-        """加仓要 can_open；减仓在对账失败时仍允许（只平不开）。"""
+        """加仓要 can_open 且未超 max_lots；减仓在对账失败/超限时仍允许。"""
         if int(delta) not in (-1, 1):
             return False
         if self.inflight:
             return False
         if self.is_reduce(delta):
             return True
+        if abs(self.lots) >= self.max_lots:
+            return False
+        if self._exch_blocks_add(delta):
+            return False
         return self.can_open()
 
     def expected_exchange(self) -> Tuple[Optional[float], Optional[float]]:
@@ -232,6 +263,34 @@ class PositionLedger:
         for cloid in list(self.orders):
             self.on_reject(cloid, reason)
 
+    def adopt_exchange(
+        self,
+        pos_a: float,
+        pos_b: float,
+        *,
+        note: str = "",
+        now: Optional[float] = None,
+    ) -> bool:
+        """清空在途，按交易所对锁仓认领到账本。对锁则 True，否则 False（调用方再 abort）。"""
+        now = time.time() if now is None else now
+        self.last_exch_a = float(pos_a)
+        self.last_exch_b = float(pos_b)
+        hedge = self._hedge_from_exchange(float(pos_a), float(pos_b))
+        # 无论成败都先解锁在途，避免卡在 inflight
+        self.orders = {}
+        self.reserved_delta = 0
+        if hedge is None:
+            return False
+        pa, pb = hedge
+        self.pos_a, self.pos_b = pa, pb
+        self.last_fill_ts = now
+        n = self.lots
+        msg = note or f"按交易所认领 {pa:+.6g}/{pb:+.6g} {n:+d}层"
+        if abs(n) > self.max_lots:
+            msg += f" 超{self.max_lots}层只平"
+        self._mark_ok(msg)
+        return True
+
     def _hedge_tol(self) -> float:
         """净敞口容差：整层内视为对锁（允许 A/B 差最多一层的零头）。"""
         return max(self.pos_tolerance, self.qty_per_layer * 1.0)
@@ -316,6 +375,8 @@ class PositionLedger:
                     n = int(round(pa / self.qty_per_layer))
                     self.pos_a, self.pos_b = pa, pb
                     note = f"按交易所认领 {pa:+.6g}/{pb:+.6g} {n:+d}层"
+                    if abs(n) > self.max_lots:
+                        note += f" 超{self.max_lots}层只平"
                 self._mark_ok(note)
                 return True
         exp_a, exp_b = self.expected_exchange()

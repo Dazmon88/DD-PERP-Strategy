@@ -426,15 +426,14 @@ class DualLegBroker:
         )
         self._align_a(cur_target_a, result, label="收尾对冲")
 
-        # 两腿齐：用仓位对齐判断
+        # 两腿齐：用仓位对齐判断；成功/失败都优先按交易所绝对仓认领，避免账本归零叠仓
         pos_a = self._pos("a")
         snap_a.after = pos_a
         hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b))
         want_n = int(round(float(before_a + signed_a) / ledger.qty_per_layer))
         got_n = None if hedge is None else int(round(hedge[0] / ledger.qty_per_layer))
         if hedge is not None and got_n == want_n:
-            ledger.on_fill(cloid_a, float(qty))
-            ledger.on_fill(cloid_b, float(qty))
+            ledger.adopt_exchange(float(pos_a), float(pos_b), note="两腿成交")
             result.ok = True
             result.note = "两腿成交"
             result.logs.append(f"账本 {ledger.state} lots={ledger.lots}")
@@ -444,6 +443,14 @@ class DualLegBroker:
             f"仓不对齐 A {pos_a:+.8f} B {pos_b:+.8f} 期望层 {want_n:+d} 实层 {got_n}"
         )
         result.error = result.error or "一层未齐"
+        # 对锁则认领真实仓，绝不 abort 成 0（否则网格会当空仓反复开）
+        if ledger.adopt_exchange(
+            float(pos_a), float(pos_b), note="一层未齐已认领"
+        ):
+            result.note = ledger.note or "一层未齐已认领"
+            result.logs.append(result.note)
+            result.flattened = False
+            return result
         result.flattened = True
         ledger.abort_layer("一层未齐")
         result.note = "一层未齐"
