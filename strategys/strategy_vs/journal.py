@@ -24,6 +24,19 @@ HEADERS = [
     "BA净bp",
     "A价",
     "B价",
+    "A仓前",
+    "A仓后",
+    "B仓前",
+    "B仓后",
+    "A侧",
+    "B侧",
+    "A下单次数",
+    "A下单量",
+    "A订单号",
+    "B订单号",
+    "A下单日志",
+    "B挂单日志",
+    "执行日志",
     "开仓次数",
     "平仓次数",
     "备注",
@@ -46,6 +59,12 @@ def _num(value: Optional[float]) -> str:
     if value is None:
         return ""
     return f"{float(value):.8g}"
+
+
+def _txt(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 class PaperJournal:
@@ -89,9 +108,6 @@ class PaperJournal:
             return
         if old == HEADERS:
             return
-        missing = [h for h in HEADERS if h not in old]
-        if not missing and len(old) == len(HEADERS):
-            return
         rows: List[Dict[str, str]] = []
         try:
             with open(self.path, "r", encoding="utf-8-sig", newline="") as fh:
@@ -132,6 +148,19 @@ class PaperJournal:
         edge_pct: Optional[float] = None,
         px_a: Optional[float] = None,
         px_b: Optional[float] = None,
+        pos_a_before: Optional[float] = None,
+        pos_a_after: Optional[float] = None,
+        pos_b_before: Optional[float] = None,
+        pos_b_after: Optional[float] = None,
+        a_side: str = "",
+        b_side: str = "",
+        a_order_count: Optional[int] = None,
+        a_order_qty: Optional[float] = None,
+        a_order_id: str = "",
+        b_order_id: str = "",
+        a_order_log: str = "",
+        b_order_log: str = "",
+        exec_log: str = "",
         note: str = "",
     ) -> None:
         if action == "开仓":
@@ -169,6 +198,19 @@ class PaperJournal:
             "BA净bp": _bp(ba_pct),
             "A价": _num(px_a),
             "B价": _num(px_b),
+            "A仓前": _num(pos_a_before),
+            "A仓后": _num(pos_a_after),
+            "B仓前": _num(pos_b_before),
+            "B仓后": _num(pos_b_after),
+            "A侧": _txt(a_side),
+            "B侧": _txt(b_side),
+            "A下单次数": "" if a_order_count is None else str(int(a_order_count)),
+            "A下单量": _num(a_order_qty),
+            "A订单号": _txt(a_order_id),
+            "B订单号": _txt(b_order_id),
+            "A下单日志": _txt(a_order_log),
+            "B挂单日志": _txt(b_order_log),
+            "执行日志": _txt(exec_log),
             "开仓次数": self.opens,
             "平仓次数": self.closes,
             "备注": note,
@@ -177,8 +219,11 @@ class PaperJournal:
         with open(self.path, "a", encoding="utf-8-sig", newline="") as fh:
             csv.DictWriter(fh, fieldnames=HEADERS).writerow(row)
         edge_txt = _pct(trade_edge)
+        a_n = int(a_order_count or 0)
         self.last = (
-            f"{action} {side} 价差{edge_txt}% 开{self.opens}平{self.closes}"
+            f"{action} {side} 价差{edge_txt}% A×{a_n} "
+            f"B仓{_num(pos_b_before)}→{_num(pos_b_after)} "
+            f"开{self.opens}平{self.closes}"
             if edge_txt
-            else f"{action} {side} 开{self.opens}平{self.closes}"
+            else f"{action} {side} A×{a_n} 开{self.opens}平{self.closes}"
         )

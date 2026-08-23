@@ -376,7 +376,20 @@ def _execute_layer(
         )
     except Exception as exc:
         ledger.abort_layer(f"一层异常 {exc}")
-        return type("LayerFail", (), {"ok": False, "error": str(exc), "note": f"一层异常 {exc}"})()
+        from hedge import LayerResult, LegSnap
+        from decimal import Decimal as _D
+
+        zero = _D("0")
+        fail = LayerResult(
+            ok=False,
+            delta=delta,
+            a=LegSnap("a", hedge.symbol_a, "", zero, zero),
+            b=LegSnap("b", hedge.symbol_b, "", zero, zero),
+            error=str(exc),
+            note=f"一层异常 {exc}",
+        )
+        fail.logs.append(fail.note)
+        return fail
 
 
 def _tick_journal_kwargs(tick: Optional[GridTick], **extra: Any) -> Dict[str, Any]:
@@ -872,10 +885,14 @@ async def _print_loop(
                 with contextlib.suppress(Exception):
                     result = order_task.result()
                     note = ""
+                    exec_fields: Dict[str, Any] = {}
                     if result is not None:
                         note = str(getattr(result, "note", "") or "")
                         if getattr(result, "error", "") and not getattr(result, "ok", False):
                             note = str(result.error)
+                        jf = getattr(result, "journal_fields", None)
+                        if callable(jf):
+                            exec_fields = jf()
                     if pending_log is not None:
                         extra_note = str(pending_log.pop("note", "") or "")
                         if extra_note and note:
@@ -884,6 +901,7 @@ async def _print_loop(
                             note = extra_note
                         paper.record(
                             **pending_log,
+                            **exec_fields,
                             lots_after=ledger.lots,
                             note=note,
                         )
@@ -940,9 +958,18 @@ async def _print_loop(
                     if abs(_pa - _target) > _tol:
                         if hedge.qty_per_layer <= 0:
                             hedge.qty_per_layer = ledger.qty_per_layer
-                        _ok, _msg = hedge.align_a_only(_target)
+                        _ok, _msg, _fields = hedge.align_a_only(_target)
                         last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
                         last_align = now
+                        paper.record(
+                            action="敞口补仓",
+                            delta=1 if (_pa - _target) < 0 else -1,
+                            lots_before=ledger.lots,
+                            lots_after=ledger.lots,
+                            qty=ledger.qty_per_layer,
+                            note=_msg,
+                            **_fields,
+                        )
 
             _clear_tty()
             text, tick, quotes_ok = _render(

@@ -166,6 +166,31 @@ class LayerResult:
     error: str = ""
     note: str = ""
     logs: list[str] = field(default_factory=list)
+    a_order_count: int = 0
+    a_order_qty: Decimal = Decimal("0")
+    a_order_log: list[str] = field(default_factory=list)
+
+    def journal_fields(self) -> dict:
+        """供 CSV 记录：A 下单明细 + 两所仓位快照。"""
+        a_log = list(self.a_order_log) or [
+            x for x in self.logs if x.startswith("A ")
+        ]
+        b_log = [x for x in self.logs if x.startswith("B ")]
+        return {
+            "pos_a_before": float(self.a.before),
+            "pos_a_after": float(self.a.after),
+            "pos_b_before": float(self.b.before),
+            "pos_b_after": float(self.b.after),
+            "a_side": self.a.side,
+            "b_side": self.b.side,
+            "a_order_id": self.a.order_id,
+            "b_order_id": self.b.order_id,
+            "a_order_count": int(self.a_order_count),
+            "a_order_qty": float(self.a_order_qty),
+            "a_order_log": " | ".join(a_log),
+            "b_order_log": " | ".join(b_log[-8:]),
+            "exec_log": " | ".join(self.logs[-16:]),
+        }
 
 
 class DualLegBroker:
@@ -292,22 +317,35 @@ class DualLegBroker:
                 # A 对冲：每 hedge_cooldown_sec 最多触发一次
                 if not a_aligned and time.time() - last_align_ts >= hedge_cooldown_sec:
                     side = "buy" if gap_a > 0 else "sell"
+                    qty_a = abs(gap_a)
                     order, err = _place_taker(
                         self.adapter_a,
                         symbol=self.symbol_a,
                         side=side,
-                        qty=abs(gap_a),
+                        qty=qty_a,
                         reduce_only=False,
                     )
                     if err:
                         result.a.error = err
-                        result.logs.append(f"A 对冲失败 {err}")
+                        msg = (
+                            f"A 对冲失败 {side} {qty_a} "
+                            f"pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
+                            f"target={cur_target_a:+.8f} err={err}"
+                        )
+                        result.logs.append(msg)
+                        result.a_order_log.append(msg)
                     else:
                         oid = str(getattr(order, "order_id", "") or "")
                         result.a.order_id = oid or result.a.order_id
-                        result.logs.append(
-                            f"A {side} 对齐 {abs(gap_a)} target={cur_target_a:+.8f} id={oid}"
+                        result.a_order_count += 1
+                        result.a_order_qty += qty_a
+                        msg = (
+                            f"A {side} {qty_a} "
+                            f"pos_a={pos_a:+.8f}→target={cur_target_a:+.8f} "
+                            f"pos_b={pos_b:+.8f} id={oid}"
                         )
+                        result.logs.append(msg)
+                        result.a_order_log.append(msg)
                     last_align_ts = time.time()
 
                 # B 挂单逻辑（B 已齐时跳过）
@@ -409,7 +447,10 @@ class DualLegBroker:
                 order_id = str(getattr(order, "order_id", "") or "")
                 our_px = touch
                 snap_b.order_id = order_id
-                result.logs.append(f"B {side_b} Maker {touch} remain={remain} id={order_id}")
+                result.logs.append(
+                    f"B {side_b} Maker {touch} remain={remain} "
+                    f"pos_b={pos_b:+.8f} id={order_id}"
+                )
                 time.sleep(self.poll_sec)
         finally:
             if order_id:
@@ -464,6 +505,7 @@ class DualLegBroker:
     ) -> bool:
         """让 A 仓位对齐到 target_a。返回 True 表示下单成功（或已对齐）。"""
         pos_a = self._pos("a")
+        pos_b = self._pos("b")
         gap = target_a - pos_a
         tol = max(Decimal(str(self.qty_per_layer)) * Decimal("0.05"), Decimal("1e-8"))
         if abs(gap) <= tol:
@@ -479,39 +521,97 @@ class DualLegBroker:
         )
         if err:
             result.a.error = err
-            result.logs.append(f"A {label} 失败 {err}")
+            msg = (
+                f"A {label}失败 {side} {qty} "
+                f"pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
+                f"target={target_a:+.8f} err={err}"
+            )
+            result.logs.append(msg)
+            result.a_order_log.append(msg)
             return False
         oid = str(getattr(order, "order_id", "") or "")
         result.a.order_id = oid or result.a.order_id
-        result.logs.append(f"A {label} {side} {qty} target={target_a:+.8f} id={oid}")
+        result.a_order_count += 1
+        result.a_order_qty += qty
+        msg = (
+            f"A {label} {side} {qty} "
+            f"pos_a={pos_a:+.8f}→target={target_a:+.8f} "
+            f"pos_b={pos_b:+.8f} id={oid}"
+        )
+        result.logs.append(msg)
+        result.a_order_log.append(msg)
         return True
 
-    def align_a_only(self, target_a: Decimal) -> tuple[bool, str]:
+    def align_a_only(self, target_a: Decimal) -> tuple[bool, str, dict]:
         """仅对齐 A 仓位到 target_a，不触碰账本层逻辑（用于后台敞口守护）。
 
-        返回 (已对齐, 日志消息)。
-        已对齐 = 当前仓位已在容差内（或下单成功）。
+        返回 (已对齐或下单成功, 日志消息, 仓位/下单字段)。
         """
         pos_a = self._pos("a")
+        pos_b = self._pos("b")
+        fields = {
+            "pos_a_before": float(pos_a),
+            "pos_b_before": float(pos_b),
+            "pos_a_after": float(pos_a),
+            "pos_b_after": float(pos_b),
+            "a_side": "",
+            "b_side": "",
+            "a_order_id": "",
+            "b_order_id": "",
+            "a_order_count": 0,
+            "a_order_qty": 0.0,
+            "a_order_log": "",
+            "b_order_log": "",
+            "exec_log": "",
+        }
         qty = Decimal(str(getattr(self, "qty_per_layer", None) or 0))
         if qty <= 0:
-            return False, "qty_per_layer 未初始化"
+            return False, "qty_per_layer 未初始化", fields
         tol = max(qty * Decimal("0.05"), Decimal("1e-8"))
         gap = target_a - pos_a
         if abs(gap) <= tol:
-            return True, f"A 已对齐 pos={pos_a:+.8f} target={target_a:+.8f}"
+            msg = (
+                f"A 已对齐 pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
+                f"target={target_a:+.8f}"
+            )
+            fields["a_order_log"] = msg
+            fields["exec_log"] = msg
+            return True, msg, fields
         side = "buy" if gap > 0 else "sell"
+        order_qty = abs(gap)
+        fields["a_side"] = side
         order, err = _place_taker(
             self.adapter_a,
             symbol=self.symbol_a,
             side=side,
-            qty=abs(gap),
+            qty=order_qty,
             reduce_only=False,
         )
         if err:
-            return False, f"A 对齐失败 {side} {abs(gap)} err={err}"
+            msg = (
+                f"A 对齐失败 {side} {order_qty} "
+                f"pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
+                f"target={target_a:+.8f} err={err}"
+            )
+            fields["a_order_log"] = msg
+            fields["exec_log"] = msg
+            return False, msg, fields
         oid = str(getattr(order, "order_id", "") or "")
-        return True, f"A 对齐 {side} {abs(gap)} target={target_a:+.8f} id={oid}"
+        fields["a_order_id"] = oid
+        fields["a_order_count"] = 1
+        fields["a_order_qty"] = float(order_qty)
+        # 下单后尽量再读一次 A 仓（WSS 可能仍滞后）
+        pos_a2 = self._pos("a")
+        fields["pos_a_after"] = float(pos_a2)
+        fields["pos_b_after"] = float(self._pos("b"))
+        msg = (
+            f"A 对齐 {side} {order_qty} "
+            f"pos_a={pos_a:+.8f}→{pos_a2:+.8f} "
+            f"pos_b={pos_b:+.8f} target={target_a:+.8f} id={oid}"
+        )
+        fields["a_order_log"] = msg
+        fields["exec_log"] = msg
+        return True, msg, fields
 
     def _fail_empty(self, delta: int, error: str) -> LayerResult:
         zero = Decimal("0")
