@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+# 日志统一按香港时间（UTC+8）
+_HK = ZoneInfo("Asia/Hong_Kong")
+
+
+def _now_hk() -> str:
+    """香港时间，便于查看：2026-08-23 18:35:01"""
+    return datetime.now(_HK).strftime("%Y-%m-%d %H:%M:%S")
 
 HEADERS = [
     "时间",
@@ -181,7 +190,7 @@ class PaperJournal:
         else:
             trade_edge = mag
         row: Dict[str, Any] = {
-            "时间": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "时间": _now_hk(),
             "动作": action,
             "方向": side,
             "层前": lots_before,
