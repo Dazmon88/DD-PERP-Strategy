@@ -75,15 +75,24 @@ def _px_str(value: Decimal) -> str:
 
 
 def _spread_tick(bid: Decimal, ask: Decimal) -> Decimal:
-    spread = ask - bid
-    if spread > 0:
-        return spread
     mag = max(abs(bid), abs(ask), Decimal("1"))
-    if mag >= 1000:
+    if mag >= 10000:
         return Decimal("0.1")
-    if mag >= 100:
+    if mag >= 200:
         return Decimal("0.01")
-    return Decimal("0.0001")
+    return Decimal("0.01")
+
+
+def _round_to_inc(value: Decimal, inc: Decimal, *, up: bool) -> Decimal:
+    if value <= 0:
+        return value
+    if inc <= 0:
+        return value
+    n = (value / inc).to_integral_value(rounding=ROUND_CEILING if up else ROUND_FLOOR)
+    out = n * inc
+    if not up and out > value:
+        out = (n - 1) * inc
+    return out if out > 0 else inc if up else Decimal("0")
 
 
 def _touch(
@@ -92,26 +101,24 @@ def _touch(
     ask: Optional[Decimal],
     *,
     extra_ticks: int = 0,
+    quote_inc: Optional[Decimal] = None,
 ) -> Optional[Decimal]:
-    """买挂 bid、卖挂 ask；盘口锁死或 post_only 撞单则再退若干 tick。"""
+    """买挂 bid、卖挂 ask；按品种 tick 取整，加密货币不能用价差当步进。"""
     if bid is None or ask is None or bid <= 0 or ask <= 0:
         return None
-    tick = _spread_tick(bid, ask)
+    tick = quote_inc if quote_inc is not None and quote_inc > 0 else _spread_tick(bid, ask)
     extra = max(0, int(extra_ticks))
     if side == "buy":
         px = bid - tick * extra
         if px >= ask:
             px = bid - tick * (extra + 1)
-        rounding = ROUND_FLOOR
+        px = _round_to_inc(px, tick, up=False)
     else:
         px = ask + tick * extra
         if px <= bid:
             px = ask + tick * (extra + 1)
-        rounding = ROUND_CEILING
-    if px <= 0:
-        return None
-    stepped = (px / tick).to_integral_value(rounding=rounding) * tick
-    return stepped if stepped > 0 else None
+        px = _round_to_inc(px, tick, up=True)
+    return px if px > 0 else None
 
 
 def _should_chase(side: str, our_px: Decimal, bid: Decimal, ask: Decimal) -> bool:
@@ -152,9 +159,25 @@ def _place_maker(
 
 def _maker_fatal(err: str) -> bool:
     text = (err or "").lower()
-    if "post_only_has_match" in text or "post only" in text:
+    if "post_only_has_match" in text or "would match" in text or "post only" in text:
         return False
-    return "reduce_only" in text or "invalid_tif" in text
+    keys = (
+        "reduce_only",
+        "invalid_tif",
+        "invalid_size",
+        "min_size",
+        "min_qty",
+        "min_notional",
+        "size_increment",
+        "baseincrement",
+        "invalid_price",
+        "price_increment",
+        "quoteincrement",
+        "tick size",
+        "too small",
+        "precision",
+    )
+    return any(k in text for k in keys)
 
 
 def _maker_would_take(err: str) -> bool:
@@ -285,6 +308,59 @@ class DualLegBroker:
         self._stop = threading.Event()
         self._working_lock = threading.Lock()
         self._working_oid = ""
+        self._b_filters: Optional[dict] = None
+
+    def _load_b_filters(self) -> dict:
+        if self._b_filters is not None:
+            return self._b_filters
+        filters = {
+            "base_inc": Decimal("0"),
+            "quote_inc": Decimal("0"),
+            "min_size": Decimal("0"),
+        }
+        getter = getattr(self.adapter_b, "get_market_filters", None)
+        if callable(getter):
+            try:
+                got = getter(self.symbol_b) or {}
+                for key in ("base_inc", "quote_inc", "min_size"):
+                    val = got.get(key)
+                    if val not in (None, ""):
+                        filters[key] = _d(val)
+            except Exception as exc:
+                self._log(f"B 精度查询失败 {self.symbol_b}: {exc}")
+        if filters["base_inc"] <= 0 or filters["quote_inc"] <= 0:
+            name = (self.symbol_b or "").upper()
+            if name.startswith("BTC"):
+                filters["base_inc"] = filters["base_inc"] or Decimal("0.00001")
+                filters["quote_inc"] = filters["quote_inc"] or Decimal("0.1")
+                filters["min_size"] = filters["min_size"] or Decimal("0.0001")
+            elif name.startswith("ETH"):
+                filters["base_inc"] = filters["base_inc"] or Decimal("0.001")
+                filters["quote_inc"] = filters["quote_inc"] or Decimal("0.01")
+                filters["min_size"] = filters["min_size"] or Decimal("0.001")
+            else:
+                filters["base_inc"] = filters["base_inc"] or Decimal("0.01")
+                filters["quote_inc"] = filters["quote_inc"] or Decimal("0.01")
+                filters["min_size"] = filters["min_size"] or Decimal("0.01")
+        self._b_filters = filters
+        self._log(
+            f"B 精度 {self.symbol_b} base={filters['base_inc']} "
+            f"quote={filters['quote_inc']} min={filters['min_size']}"
+        )
+        return filters
+
+    def _fit_b_qty(self, qty: Decimal) -> Decimal:
+        filters = self._load_b_filters()
+        inc = filters["base_inc"]
+        min_size = filters["min_size"] or inc
+        fitted = qty
+        if inc > 0:
+            fitted = _round_to_inc(qty, inc, up=True)
+        if min_size > 0 and fitted < min_size:
+            fitted = min_size
+            if inc > 0:
+                fitted = _round_to_inc(fitted, inc, up=True)
+        return fitted
 
     def request_stop(self) -> None:
         """Ctrl+C：停循环并撤掉本对正在挂的 B 单。"""
@@ -367,6 +443,7 @@ class DualLegBroker:
         cloid_a, cloid_b = cloids
         style = "Maker" if self.b_maker else "市价"
         result.logs.append(f"锁层 {delta:+d} 账本={ledger.state} B={side_b} {style} / A={side_a} 市价")
+        self._load_b_filters()
 
         if not self.live:
             ledger.abort_layer("dry-run")
@@ -512,7 +589,13 @@ class DualLegBroker:
                         result.logs.append("B 盘口空，等待")
                     time.sleep(self.poll_sec)
                     continue
-                touch = _touch(side_b, bid, ask, extra_ticks=passive_ticks)
+                touch = _touch(
+                    side_b,
+                    bid,
+                    ask,
+                    extra_ticks=passive_ticks,
+                    quote_inc=self._load_b_filters()["quote_inc"],
+                )
                 if touch is None or touch <= 0:
                     time.sleep(self.poll_sec)
                     continue
@@ -533,11 +616,20 @@ class DualLegBroker:
                     time.sleep(self.poll_sec)
                     continue
 
+                place_qty = self._fit_b_qty(remain)
+                if place_qty <= 0:
+                    result.error = f"B 数量无效 remain={remain}"
+                    result.logs.append(result.error)
+                    break
+                if place_qty != remain:
+                    result.logs.append(
+                        f"B 数量 {remain} → {place_qty}（按步进/最小量）"
+                    )
                 order, err = _place_maker(
                     self.adapter_b,
                     symbol=self.symbol_b,
                     side=side_b,
-                    qty=remain,
+                    qty=place_qty,
                     price=touch,
                 )
                 if err or order is None:

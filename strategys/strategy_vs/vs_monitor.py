@@ -87,6 +87,7 @@ class PairRuntime:
     last_recon_log: float = 0.0
     last_ready: Optional[bool] = None
     last_exec_end: float = 0.0
+    last_fail_ts: float = 0.0
     pending_log: Optional[Dict[str, Any]] = None
     order_task: Any = None
 
@@ -422,37 +423,67 @@ def _settle_layer(rt: PairRuntime, runlog: RunLog) -> None:
     task = rt.order_task
     if task is None or not task.done():
         return
-    with contextlib.suppress(Exception):
+    result = None
+    note = ""
+    err = ""
+    exec_fields: Dict[str, Any] = {}
+    try:
         result = task.result()
-        note = ""
-        exec_fields: Dict[str, Any] = {}
-        if result is not None:
-            note = str(getattr(result, "note", "") or "")
-            if getattr(result, "error", "") and not getattr(result, "ok", False):
-                note = str(result.error)
-            jf = getattr(result, "journal_fields", None)
-            if callable(jf):
-                exec_fields = jf()
-        if rt.pending_log is not None and "让出执行" in note:
-            rt.last_layer = note
-            runlog.line(f"让出 {note}", pair=rt.spec.name)
-        elif rt.pending_log is not None:
-            extra_note = str(rt.pending_log.pop("note", "") or "")
-            if extra_note and note:
-                note = f"{extra_note} {note}"
-            elif extra_note:
-                note = extra_note
-            rt.paper.record(
-                **rt.pending_log,
-                **exec_fields,
-                lots_after=rt.ledger.lots,
-                note=note,
-            )
-            rt.last_layer = rt.paper.last
-            runlog.line(rt.paper.last, pair=rt.spec.name)
-        elif note:
-            rt.last_layer = note
-            runlog.line(f"结束 {note}", pair=rt.spec.name)
+    except Exception as exc:
+        err = f"一层异常 {exc}"
+        runlog.line(err, pair=rt.spec.name)
+        rt.last_fail_ts = time.time()
+    if result is not None:
+        note = str(getattr(result, "note", "") or "")
+        err = str(getattr(result, "error", "") or "") or err
+        if err and not getattr(result, "ok", False):
+            note = err
+        logs = list(getattr(result, "logs", None) or [])
+        if not getattr(result, "ok", False):
+            for line in logs[-20:]:
+                runlog.line(str(line), pair=rt.spec.name)
+            if err:
+                runlog.line(f"错误 {err}", pair=rt.spec.name)
+            elif note:
+                runlog.line(f"结束 {note}", pair=rt.spec.name)
+        jf = getattr(result, "journal_fields", None)
+        if callable(jf):
+            exec_fields = jf()
+    ok = bool(getattr(result, "ok", False)) if result is not None else False
+    b_before = exec_fields.get("pos_b_before")
+    b_after = exec_fields.get("pos_b_after")
+    b_moved = False
+    try:
+        if b_before is not None and b_after is not None:
+            b_moved = abs(float(b_after) - float(b_before)) > 1e-12
+    except (TypeError, ValueError):
+        b_moved = False
+    if rt.pending_log is not None and "让出执行" in note:
+        rt.last_layer = note
+        runlog.line(f"让出 {note}", pair=rt.spec.name)
+    elif rt.pending_log is not None and (ok or b_moved):
+        extra_note = str(rt.pending_log.pop("note", "") or "")
+        if extra_note and note:
+            note = f"{extra_note} {note}"
+        elif extra_note:
+            note = extra_note
+        rt.paper.record(
+            **rt.pending_log,
+            **exec_fields,
+            lots_after=rt.ledger.lots,
+            note=note,
+        )
+        rt.last_layer = rt.paper.last
+        runlog.line(rt.paper.last, pair=rt.spec.name)
+    elif rt.pending_log is not None:
+        rt.last_fail_ts = time.time()
+        rt.last_layer = note or err
+        runlog.line(
+            f"未挂成 {note or err or '一层未齐'} B仓{b_before}→{b_after}",
+            pair=rt.spec.name,
+        )
+    elif note:
+        rt.last_layer = note
     rt.pending_log = None
     rt.last_exec_end = time.time()
     rt.order_task = None
@@ -1521,6 +1552,8 @@ async def _print_loop(
                 rt.grid.lots = rt.ledger.lots
                 ticks.append((rt, tick, quotes_ok, qa, qb))
                 if _pair_busy(rt):
+                    continue
+                if now - rt.last_fail_ts < 3.0:
                     continue
                 want = _order_delta(
                     tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=False

@@ -136,6 +136,29 @@ def normalize_ondo_symbol(symbol: str) -> str:
     return normalize_market(s)
 
 
+def _walk_market_rows(raw: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            rows.extend(_walk_market_rows(item))
+        return rows
+    if not isinstance(raw, dict):
+        return rows
+    if raw.get("market") and (
+        "baseIncrement" in raw or "quoteIncrement" in raw or "minSize" in raw
+    ):
+        rows.append(raw)
+        return rows
+    for key in ("tradingPairs", "perps", "result", "data", "markets"):
+        if key in raw:
+            rows.extend(_walk_market_rows(raw.get(key)))
+    if not rows:
+        for val in raw.values():
+            if isinstance(val, (dict, list)):
+                rows.extend(_walk_market_rows(val))
+    return rows
+
+
 class OndoAdapter(BasePerpAdapter):
     """Ondo Perps 交易所适配器"""
 
@@ -184,6 +207,7 @@ class OndoAdapter(BasePerpAdapter):
             auth=self.auth,
             timeout=timeout,
         )
+        self._market_filters: Dict[str, Dict[str, Decimal]] = {}
         self.ws_url = config.get("ws_url")
         self.market_stream: Optional[OndoPerpStream] = None
         self._connected = False
@@ -384,6 +408,36 @@ class OndoAdapter(BasePerpAdapter):
             )
         except Exception as e:
             raise Exception(f"下单失败: {e}") from e
+
+    def get_market_filters(self, symbol: str) -> Dict[str, Decimal]:
+        """base/quote 步进和最小数量，加密货币和股票不一样。"""
+        market = normalize_ondo_symbol(symbol)
+        cached = self._market_filters.get(market)
+        if cached is not None:
+            return cached
+        out = {
+            "base_inc": Decimal("0"),
+            "quote_inc": Decimal("0"),
+            "min_size": Decimal("0"),
+        }
+        try:
+            raw = self.http_client.get_markets()
+            for row in _walk_market_rows(raw):
+                if normalize_ondo_symbol(str(row.get("market") or "")) != market:
+                    continue
+                def _dec(key: str) -> Decimal:
+                    val = row.get(key)
+                    if val in (None, ""):
+                        return Decimal("0")
+                    return Decimal(str(val))
+                out["base_inc"] = _dec("baseIncrement") or _dec("sizeIncrement")
+                out["quote_inc"] = _dec("quoteIncrement") or _dec("priceIncrement") or _dec("tickSize")
+                out["min_size"] = _dec("minSize") or _dec("minOrderSize") or out["base_inc"]
+                break
+        except Exception:
+            pass
+        self._market_filters[market] = out
+        return out
 
     def cancel_order(
         self,
