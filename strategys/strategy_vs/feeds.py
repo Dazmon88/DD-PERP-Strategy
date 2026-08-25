@@ -17,10 +17,12 @@ from accounts import (  # noqa: E402
     from_adapter_balance,
     parse_lighter_positions,
     parse_lighter_positions_map,
+    lighter_positions_complete,
     parse_lighter_user_stats,
     parse_ondo_balance,
     parse_ondo_positions,
     parse_ondo_positions_map,
+    ondo_positions_complete,
     parse_popdex_account,
     parse_popdex_positions,
 )
@@ -94,10 +96,11 @@ class QuoteBook:
                     quote.ask = prev.ask
                     if quote.ask_sz is None:
                         quote.ask_sz = prev.ask_sz
+            # 价格未变但量/档位变了也算一次 WSS 更新（ts 用调用方传入的值）
             self._data[quote.venue] = quote
 
     async def touch(self, venue: str, ts: float, source: str = "wss") -> None:
-        """WSS 有推送但盘口字段没变时，只刷新存活时间。"""
+        """WSS 有推送但盘口字段没变（或只有深度增量）时，刷新存活时间。"""
         async with self._lock:
             prev = self._data.get(venue)
             if prev is None or prev.bid is None or prev.ask is None:
@@ -146,6 +149,34 @@ def _lighter_market_meta(adapter: Any, market_id: Any) -> Dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return by_id.get(mid) or {}
+
+
+def _ondo_channel_name(channel: str) -> str:
+    return str(channel or "").split(":", 1)[0].split("/", 1)[0].strip()
+
+
+def _ondo_channel_market(channel: str) -> str:
+    text = str(channel or "")
+    if ":" in text:
+        return text.split(":", 1)[1].strip()
+    if "/" in text and not text.lower().startswith("http"):
+        parts = text.split("/", 1)
+        if parts[0] in ("topOfBooksPerps", "depthBooksPerps", "book"):
+            return parts[1].strip()
+    return ""
+
+
+def _ondo_is_book_channel(channel: str) -> bool:
+    if not channel:
+        return True
+    name = _ondo_channel_name(channel).lower()
+    return name in {
+        "topofbooksperps",
+        "depthbooksperps",
+        "book",
+        "depth",
+        "ticker",
+    } or name.startswith("topofbook") or name.startswith("depthbook")
 
 
 def _pick_wanted_symbol(have: str, wanted: list) -> Optional[str]:
@@ -364,15 +395,24 @@ async def _account_rest_loop(
             except asyncio.TimeoutError:
                 pass
         first = False
-        snap = (await accounts.snapshot()).get(venue)
+        snapshot = await accounts.snapshot()
+        snap = snapshot.get(venue)
         bal_ts = float(getattr(snap, "balance_ts", 0.0) or 0.0) if snap else 0.0
-        if (
+        bal_fresh = bool(
             snap
             and not snap.error
             and bal_ts
             and (time.time() - bal_ts) < stale_sec
             and (snap.source or "").lower() == "wss"
-        ):
+        )
+        wanted = feed_symbols(venue_cfg) or [symbol]
+        pos_missing = False
+        for sym in wanted:
+            ps = snapshot.get(slot_book_key(venue, str(sym)))
+            if ps is None or ps.pos_qty is None:
+                pos_missing = True
+                break
+        if bal_fresh and not pos_missing:
             continue
         if not has_auth:
             await accounts.patch(
@@ -507,38 +547,59 @@ async def _run_lighter(
         if matched is None:
             return
         bid, ask, bid_sz, ask_sz = _bbo_from_book(payload.get("bids"), payload.get("asks"))
+        now = time.time()
+        key = _book_key(matched)
+        if bid is None and ask is None:
+            loop.create_task(book.touch(key, now, source="wss"))
+            return
         loop.create_task(
             book.update(
                 Quote(
-                    venue=_book_key(matched),
+                    venue=key,
                     exchange=exchange,
                     symbol=matched,
                     bid=bid,
                     ask=ask,
                     bid_sz=bid_sz,
                     ask_sz=ask_sz,
-                    ts=time.time(),
+                    ts=now,
                     source="wss",
                 )
             )
         )
 
     def on_account_update(_account_id, payload):
-        """account_all：一次推送拆到各品种仓位。"""
+        """account_all：一次推送拆到各品种；全量快照里没出现的品种记 0。"""
         if accounts is None or stop.is_set():
             return
         by_sym = parse_lighter_positions_map(payload)
         now = time.time()
-        if by_sym:
-            for have, qty in by_sym.items():
-                matched = _pick_wanted_symbol(have, symbols)
-                if matched is None:
+        seen = set()
+        for have, qty in by_sym.items():
+            matched = _pick_wanted_symbol(have, symbols)
+            if matched is None:
+                continue
+            seen.add(matched)
+            loop.create_task(
+                accounts.patch(
+                    AccountSnap(
+                        venue=_book_key(matched),
+                        pos_qty=qty,
+                        pos_symbol=matched,
+                        source="wss",
+                        ts=now,
+                    )
+                )
+            )
+        if lighter_positions_complete(payload):
+            for matched in symbols:
+                if matched in seen:
                     continue
                 loop.create_task(
                     accounts.patch(
                         AccountSnap(
                             venue=_book_key(matched),
-                            pos_qty=qty,
+                            pos_qty=0.0,
                             pos_symbol=matched,
                             source="wss",
                             ts=now,
@@ -546,7 +607,8 @@ async def _run_lighter(
                     )
                 )
             return
-        # 空列表：不写成 0，交给粘性仓
+        if by_sym:
+            return
         for matched in symbols:
             pos_qty = parse_lighter_positions(payload, matched)
             if pos_qty is None:
@@ -745,17 +807,18 @@ async def _run_ondo(
         if stop.is_set():
             return
         channel = str(message.get("channel") or "")
-        if channel and channel not in ("topOfBooksPerps", "book"):
+        if not _ondo_is_book_channel(channel):
             return
         now = time.time()
         last_book_ts = now
         data = message.get("data")
         rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        chan_mkt = _ondo_channel_market(channel)
         updated = False
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            market = str(row.get("market") or "")
+            market = str(row.get("market") or chan_mkt or "")
             matched = _pick_wanted_symbol(normalize_ondo_symbol(market), symbols) if market else None
             if matched is None:
                 continue
@@ -763,6 +826,11 @@ async def _run_ondo(
             if bid is None and ask is None:
                 bid, bid_sz = _level_px_sz(row.get("bid") or row.get("bestBid"))
                 ask, ask_sz = _level_px_sz(row.get("ask") or row.get("bestAsk"))
+            if bid is None and ask is None:
+                # 深度/增量里价格没变也要刷新存活：有档位或明确针对该市场即可
+                await book.touch(_book_key(matched), now, source="wss")
+                updated = True
+                continue
             await book.update(
                 Quote(
                     venue=_book_key(matched),
@@ -777,8 +845,9 @@ async def _run_ondo(
                 )
             )
             updated = True
-        if not updated:
-            for matched in symbols:
+        if not updated and chan_mkt:
+            matched = _pick_wanted_symbol(normalize_ondo_symbol(chan_mkt), symbols)
+            if matched is not None:
                 await book.touch(_book_key(matched), now, source="wss")
 
     async def on_balance(message: Dict[str, Any]) -> None:
@@ -806,20 +875,36 @@ async def _run_ondo(
             return
         now = time.time()
         by_mkt = parse_ondo_positions_map(message)
-        if by_mkt:
-            for have, qty in by_mkt.items():
-                matched = _pick_wanted_symbol(normalize_ondo_symbol(have), symbols)
-                if matched is None:
+        seen = set()
+        for have, qty in by_mkt.items():
+            matched = _pick_wanted_symbol(normalize_ondo_symbol(have), symbols)
+            if matched is None:
+                continue
+            seen.add(matched)
+            await accounts.patch(
+                AccountSnap(
+                    venue=_book_key(matched),
+                    pos_qty=qty,
+                    pos_symbol=matched,
+                    source="wss",
+                    ts=now,
+                )
+            )
+        if ondo_positions_complete(message):
+            for matched in symbols:
+                if matched in seen:
                     continue
                 await accounts.patch(
                     AccountSnap(
                         venue=_book_key(matched),
-                        pos_qty=qty,
+                        pos_qty=0.0,
                         pos_symbol=matched,
                         source="wss",
                         ts=now,
                     )
                 )
+            return
+        if by_mkt:
             return
         for matched in symbols:
             pos_qty = parse_ondo_positions(message, matched)
@@ -863,6 +948,10 @@ async def _run_ondo(
         while not stop.is_set():
             try:
                 await adapter.subscribe_market("book", callback=on_msg, markets=list(symbols))
+                with contextlib.suppress(Exception):
+                    await adapter.subscribe_market(
+                        "depth_book", callback=on_msg, markets=list(symbols)
+                    )
                 stream = adapter.market_stream
                 if stream is not None:
                     stream.callbacks.setdefault("*", on_msg)
@@ -885,8 +974,7 @@ async def _run_ondo(
                     if stream is None or not stream.connected:
                         raise RuntimeError("Ondo WSS 已断开")
                     now = time.time()
-                    ws_fresh = last_book_ts > 0 and (now - last_book_ts) * 1000 <= stale_ms
-                    if not ws_fresh and now - last_rest >= rest_interval:
+                    if now - last_rest >= rest_interval:
                         last_rest = now
                         await rest_once()
                     try:

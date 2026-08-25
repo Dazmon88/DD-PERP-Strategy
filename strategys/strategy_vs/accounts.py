@@ -444,6 +444,19 @@ def parse_lighter_positions_map(payload: Any) -> Dict[str, float]:
     return out
 
 
+def lighter_positions_complete(payload: Any) -> bool:
+    """account_all 带非空 positions 时视为全量快照：没出现的品种就是 0。空列表仍不信任。"""
+    data = payload if isinstance(payload, dict) else {}
+    positions = data.get("positions")
+    if positions is None and isinstance(data.get("account"), dict):
+        positions = data["account"].get("positions")
+    if isinstance(positions, dict):
+        return len(positions) > 0
+    if isinstance(positions, list):
+        return len(positions) > 0
+    return False
+
+
 def parse_ondo_balance(message: Any) -> Dict[str, Optional[float]]:
     data = message.get("data") if isinstance(message, dict) else message
     if isinstance(data, list) and data:
@@ -507,6 +520,12 @@ def parse_ondo_positions_map(message: Any) -> Dict[str, float]:
         else:
             out[market] = float(signed)
     return out
+
+
+def ondo_positions_complete(message: Any) -> bool:
+    """data 为列表且不是单条增量时，视为全量快照（空列表=全平）。"""
+    data = message.get("data") if isinstance(message, dict) else message
+    return isinstance(data, list) and len(data) != 1
 
 
 def _popdex_symbol_match(have: str, want: str) -> bool:

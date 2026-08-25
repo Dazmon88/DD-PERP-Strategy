@@ -151,9 +151,15 @@ class OndoPerpStream:
             await self._invoke_callback(self.callbacks[msg_type], data)
 
         channel = data.get("channel")
-        if channel and str(channel) in self.callbacks:
-            await self._invoke_callback(self.callbacks[str(channel)], data)
-            return
+        if channel:
+            ch = str(channel)
+            if ch in self.callbacks:
+                await self._invoke_callback(self.callbacks[ch], data)
+                return
+            base = ch.split(":")[0].split("/")[0]
+            if base in self.callbacks:
+                await self._invoke_callback(self.callbacks[base], data)
+                return
 
         # 兜底：任意 update
         if msg_type == "update" and "*" in self.callbacks:

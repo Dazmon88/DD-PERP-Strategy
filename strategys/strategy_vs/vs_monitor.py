@@ -218,12 +218,10 @@ def _acct_status(snap: Optional[AccountSnap]) -> str:
 def _acct_pos(
     snap: Optional[AccountSnap], now: float, stale_sec: float
 ) -> tuple[Optional[float], float]:
+    """有粘性仓就用。仓位 WSS 不是每秒推，超时清掉会导致一直对账等待。"""
     if snap is None or snap.pos_qty is None:
         return None, 0.0
-    ts = float(snap.ts or 0.0)
-    if ts and now - ts > stale_sec:
-        return None, ts
-    return float(snap.pos_qty), ts
+    return float(snap.pos_qty), float(snap.ts or 0.0)
 
 
 def _merge_venue_keys(venue_cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -544,27 +542,94 @@ def _leg_action(lots: int, delta: int, side: int) -> str:
     return _c("2", "对侧")
 
 
-def _fmt_bp(value: Optional[float], signed: bool = True) -> str:
+def _acct_bal_status(snap: Optional[AccountSnap]) -> str:
+    """净值/可用的新鲜度用 balance_ts，避免仓位心跳把账户延迟刷掉或撑到几十秒。"""
+    if snap is None:
+        return _c("33", "等待")
+    if snap.error and snap.equity is None and snap.available is None:
+        return _c("31", str(snap.error)[:18])
+    src = (snap.source or "").upper() or "-"
+    if snap.error:
+        src = _c("33", src)
+    elif src == "WSS":
+        src = _c("32", src)
+    elif src == "REST":
+        src = _c("33", src)
+    ts = float(snap.balance_ts or 0.0)
+    age = ""
+    if ts:
+        ms = int(max(0.0, time.time() - ts) * 1000)
+        age = f" {ms}ms" if ms < 1000 else f" {ms / 1000:.0f}s"
+    return f"{src}{_c('2', age)}"
+
+
+def _px_txt(value: Optional[float]) -> str:
     if value is None:
         return "-"
-    text = f"{value * 1e4:+.1f}" if signed else f"{value * 1e4:.1f}"
+    if value >= 1000:
+        return f"{value:,.2f}"
+    if value >= 100:
+        return f"{value:.2f}"
+    if value >= 1:
+        return f"{value:.4f}"
+    return f"{value:.6f}"
+
+
+def _age_cell(ms: Optional[int], stale: bool, width: int = 6) -> str:
+    if ms is None:
+        raw = "—"
+    elif ms < 1000:
+        raw = f"{ms}ms"
+    else:
+        raw = f"{ms / 1000:.1f}s"
+    cell = _pad(raw, width)
+    return _c("33", cell) if stale or ms is None else _c("2", cell)
+
+
+def _fmt_bp_cell(value: Optional[float], width: int = 7, signed: bool = True) -> str:
+    if value is None:
+        raw = "-"
+    elif signed:
+        raw = f"{value * 1e4:+.1f}"
+    else:
+        raw = f"{value * 1e4:.1f}"
+    cell = _pad(raw, width)
+    if value is None:
+        return cell
     if not signed:
-        return text
+        return cell
     if value > 0:
-        return _c("32", text)
+        return _c("32", cell)
     if value < 0:
-        return _c("31", text)
-    return _c("2", text)
+        return _c("31", cell)
+    return _c("2", cell)
 
 
 def _bbo_cell(q: Optional[Quote], stale_ms: int) -> str:
+    """买 / 卖 / 延迟 / 状态，各列定宽。"""
+    w_px, w_age, w_st = 12, 6, 4
     if q is None:
-        return _c("33", "连接中")
+        return (
+            f"{_pad('', w_px)} {_pad('', w_px)} "
+            f"{_age_cell(None, True, w_age)} {_pad(_c('33', '等待'), w_st, '<')}"
+        )
     stale = _is_stale(q, stale_ms)
     if q.error and (q.bid is None or q.ask is None):
-        return _c("31", str(q.error)[:20])
-    px = f"{_fmt_px(q.bid)}/{_fmt_px(q.ask)}"
-    return f"{px} {_age_text(_age_ms(q), stale)} {_quote_status(q, stale)}"
+        err = _c("31", str(q.error)[: w_px * 2 + 1])
+        return f"{_pad(err, w_px * 2 + 1, '<')} {_age_cell(_age_ms(q), True, w_age)} {_pad(_c('31', '断开'), w_st, '<')}"
+    st = _quote_status(q, stale)
+    return (
+        f"{_pad(_px_txt(q.bid), w_px)} {_pad(_px_txt(q.ask), w_px)} "
+        f"{_age_cell(_age_ms(q), stale, w_age)} {_pad(st, w_st, '<')}"
+    )
+
+
+def _bbo_header(name: str) -> str:
+    w_px, w_age, w_st = 12, 6, 4
+    return (
+        f"{_pad(name + '买', w_px, '<')} {_pad(name + '卖', w_px, '<')} "
+        f"{_pad('延迟', w_age, '<')} {_pad('态', w_st, '<')}"
+    )
 
 
 def _sync_pair_tick(
@@ -654,21 +719,22 @@ def _render_multi_board(
     sb = accounts.get("b")
     now = time.strftime("%H:%M:%S")
     busy = f"执行 {busy_name}" if hedge_busy else "空闲"
-    width = 108
-    rule = _c("2", "─" * width)
+    w_pair, w_qty, w_bp, w_lot, w_act, w_led, w_pos = 5, 8, 7, 6, 10, 8, 15
+    rule = _c("2", "─" * 118)
     lines = [
-        f"{_c('1', a_name)} vs {_c('1', b_name)}  {_c('2', now)}  "
-        f"{len(runtimes)}对  {busy}  "
-        f"{'真单' if live else '模拟'}  每所一条连接",
-        f"{a_name} 净值 {_fmt_money(sa.equity if sa else None)}  "
-        f"可用 {_fmt_money(sa.available if sa else None)}  {_acct_status(sa)}    "
-        f"{b_name} 净值 {_fmt_money(sb.equity if sb else None)}  "
-        f"可用 {_fmt_money(sb.available if sb else None)}  {_acct_status(sb)}",
+        f"{_c('1', a_name)} vs {_c('1', b_name)}   {_c('2', now)}   "
+        f"{len(runtimes)}对   {busy}   "
+        f"{'真单' if live else '模拟'}   每所一条连接",
+        f"{_pad('所', 6, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)}  账户源",
+        f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), 12)} "
+        f"{_pad(_fmt_money(sa.available if sa else None), 12)}  {_acct_bal_status(sa)}",
+        f"{_pad(b_name, 6, '<')} {_pad(_fmt_money(sb.equity if sb else None), 12)} "
+        f"{_pad(_fmt_money(sb.available if sb else None), 12)}  {_acct_bal_status(sb)}",
         rule,
-        f"{_pad('对', 5, '<')} {_pad('qty', 7)} "
-        f"{_pad(a_name + ' 买/卖', 28, '<')} {_pad(b_name + ' 买/卖', 28, '<')} "
-        f"{_pad('AB', 7)} {_pad('BA', 7)} {_pad('层', 6)} "
-        f"{_pad('动作', 12, '<')} 账本",
+        f"{_pad('对', w_pair, '<')} {_pad('qty', w_qty)} "
+        f"{_bbo_header(a_name)} {_bbo_header(b_name)} "
+        f"{_pad('AB', w_bp)} {_pad('BA', w_bp)} {_pad('层', w_lot)} "
+        f"{_pad('动作', w_act, '<')} {_pad('账本', w_led, '<')} {_pad('仓A/B', w_pos, '<')}",
     ]
     for rt, tick, quotes_ok, qa, qb in ticks:
         sample_n = 0
@@ -702,16 +768,17 @@ def _render_multi_board(
         act = _pair_action_label(
             tick, warm=warm, sample_n=sample_n, min_samples=min_samples, lots=lots
         )
-        note = ""
+        extra = ""
         if rt.last_layer:
-            note = "  " + _c("2", rt.last_layer[:36])
+            extra = "  " + rt.last_layer[:40]
+        if not quotes_ok:
+            extra += "  行情过期只平"
         lines.append(
-            f"{_pad(rt.spec.name, 5, '<')} {_pad(f'{rt.spec.qty:g}', 7)} "
-            f"{_pad(_bbo_cell(qa, stale_ms), 28, '<')} "
-            f"{_pad(_bbo_cell(qb, stale_ms), 28, '<')} "
-            f"{_pad(_fmt_bp(ab), 7)} {_pad(_fmt_bp(ba), 7)} "
-            f"{_pad(f'{lots:+d}/{rt.grid.max_lots}', 6)} "
-            f"{_pad(act, 12, '<')} {book_s} {pos}{note}"
+            f"{_pad(rt.spec.name, w_pair, '<')} {_pad(f'{rt.spec.qty:g}', w_qty)} "
+            f"{_bbo_cell(qa, stale_ms)} {_bbo_cell(qb, stale_ms)} "
+            f"{_fmt_bp_cell(ab, w_bp)} {_fmt_bp_cell(ba, w_bp)} "
+            f"{_pad(f'{lots:+d}/{rt.grid.max_lots}', w_lot)} "
+            f"{_pad(act, w_act, '<')} {_pad(book_s, w_led, '<')} {_pad(pos, w_pos, '<')}"
         )
         mag = tick.mag if tick else None
         lower = tick.lower if tick else rt.grid.lower
@@ -719,12 +786,12 @@ def _render_multi_board(
         lines.append(
             _c(
                 "2",
-                f"     {_band_bar(mag, lower, upper, 20)}  "
-                f"现 {_fmt_bp(mag)}  下 {_fmt_bp(lower, signed=False)}  "
-                f"上 {_fmt_bp(upper, signed=False)}  "
-                f"来回 {_fmt_bp(tick.cost if tick else rt.grid.cost, signed=False)}  "
-                f"×{rt.spec.fee_mult:g}"
-                + ("" if quotes_ok else "  行情过期只平"),
+                f"{_pad('', w_pair)} {_pad('', w_qty)} "
+                f"{_band_bar(mag, lower, upper, 24)}  "
+                f"现{_fmt_bp_cell(mag, 7)} 下{_fmt_bp_cell(lower, 6, signed=False)} "
+                f"上{_fmt_bp_cell(upper, 6, signed=False)} "
+                f"来回{_fmt_bp_cell(tick.cost if tick else rt.grid.cost, 6, signed=False)} "
+                f"×{rt.spec.fee_mult:g}{extra}",
             )
         )
     lines.append(rule)
