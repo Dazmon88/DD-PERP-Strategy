@@ -520,8 +520,13 @@ class LighterAdapter(BasePerpAdapter):
                 for sym in order_book_symbols:
                     key = self._resolve_market_key(sym)
                     if key is None or key not in self._market_cache:
-                        raise ValueError(f"未找到交易对: {sym}")
-                    order_book_ids.append(int(self._market_cache[key]["market_id"]))
+                        continue
+                    mid = self._market_cache[key].get("market_id")
+                    if mid is None:
+                        continue
+                    order_book_ids.append(int(mid))
+                if not order_book_ids:
+                    raise ValueError(f"未找到交易对: {order_book_symbols}")
             finally:
                 await temp_client.close()
 

@@ -55,6 +55,14 @@ class WsClient:
 
         self.ws = None
 
+    @staticmethod
+    def _channel_market_id(channel):
+        token = str(channel or "").split(":")[-1].split("/")[-1]
+        try:
+            return int(token)
+        except (TypeError, ValueError):
+            return token
+
     def on_message(self, ws, message):
         if isinstance(message, str):
             message = json.loads(message)
@@ -165,13 +173,13 @@ class WsClient:
             await ws.send(json.dumps(payload))
 
     def handle_subscribed_order_book(self, message):
-        market_id = message["channel"].split(":")[1]
+        market_id = self._channel_market_id(message["channel"])
         self.order_book_states[market_id] = message["order_book"]
         if self.on_order_book_update:
             self.on_order_book_update(market_id, self.order_book_states[market_id])
 
     def handle_update_order_book(self, message):
-        market_id = message["channel"].split(":")[1]
+        market_id = self._channel_market_id(message["channel"])
         self.update_order_book_state(market_id, message["order_book"])
         if self.on_order_book_update:
             self.on_order_book_update(market_id, self.order_book_states[market_id])

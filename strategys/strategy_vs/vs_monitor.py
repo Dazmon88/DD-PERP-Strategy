@@ -544,6 +544,193 @@ def _leg_action(lots: int, delta: int, side: int) -> str:
     return _c("2", "对侧")
 
 
+def _fmt_bp(value: Optional[float], signed: bool = True) -> str:
+    if value is None:
+        return "-"
+    text = f"{value * 1e4:+.1f}" if signed else f"{value * 1e4:.1f}"
+    if not signed:
+        return text
+    if value > 0:
+        return _c("32", text)
+    if value < 0:
+        return _c("31", text)
+    return _c("2", text)
+
+
+def _bbo_cell(q: Optional[Quote], stale_ms: int) -> str:
+    if q is None:
+        return _c("33", "连接中")
+    stale = _is_stale(q, stale_ms)
+    if q.error and (q.bid is None or q.ask is None):
+        return _c("31", str(q.error)[:20])
+    px = f"{_fmt_px(q.bid)}/{_fmt_px(q.ask)}"
+    return f"{px} {_age_text(_age_ms(q), stale)} {_quote_status(q, stale)}"
+
+
+def _sync_pair_tick(
+    *,
+    vs_cfg: Dict[str, Any],
+    venues: Dict[str, Dict[str, Any]],
+    quotes: Dict[str, Quote],
+    windows: Optional[Dict[str, SpreadWindow]],
+    grid: Optional[SpreadGrid],
+    ledger: Optional[PositionLedger],
+    key_a: str,
+    key_b: str,
+) -> tuple[Optional[GridTick], bool, Optional[Quote], Optional[Quote]]:
+    stale_ms = int(vs_cfg.get("stale_ms", 2000))
+    qa = quotes.get(key_a) or quotes.get("a")
+    qb = quotes.get(key_b) or quotes.get("b")
+    a_stale = _is_stale(qa, stale_ms)
+    b_stale = _is_stale(qb, stale_ms)
+    tick = grid.last if grid else None
+    have_book = (
+        qa is not None
+        and qb is not None
+        and qa.bid is not None
+        and qa.ask is not None
+        and qb.bid is not None
+        and qb.ask is not None
+    )
+    if have_book and qa is not None and qb is not None:
+        legs = list(_pair_legs_from_quotes(venues, qa, qb))
+        if windows and not (a_stale or b_stale):
+            windows["ab"].add(legs[0].pct)
+            windows["ba"].add(legs[1].pct)
+        lots_now = ledger.lots if ledger is not None else (grid.lots if grid else 0)
+        if grid is not None and windows:
+            grid.observe(
+                windows["ab"].values(),
+                windows["ba"].values(),
+                lots_now,
+            )
+            tick = grid.peek(legs[0].pct, legs[1].pct, lots_now)
+    return tick, not (a_stale or b_stale), qa, qb
+
+
+def _pair_action_label(
+    tick: Optional[GridTick],
+    *,
+    warm: bool,
+    sample_n: int,
+    min_samples: int,
+    lots: int,
+) -> str:
+    if not warm:
+        return _c("2", f"采样{sample_n}/{min_samples}")
+    if tick and tick.action == "开仓":
+        return _c("1;32", "开仓")
+    if tick and tick.action == "加仓":
+        return _c("1;36", "加仓")
+    if tick and tick.action == "反向":
+        return _c("1;35", "反向")
+    if tick and tick.action == "减仓":
+        return _c("33", "减仓")
+    if tick and tick.action == "持有":
+        return _c("32", "持有")
+    if lots == 0:
+        return _c("2", "观望")
+    return _c("32", "持有")
+
+
+def _render_multi_board(
+    *,
+    vs_cfg: Dict[str, Any],
+    venues: Dict[str, Dict[str, Any]],
+    runtimes: List[PairRuntime],
+    quotes: Dict[str, Quote],
+    accounts: Dict[str, AccountSnap],
+    hedge_busy: bool,
+    busy_name: str,
+    live: bool,
+    ticks: List[tuple],
+) -> str:
+    stale_ms = int(vs_cfg.get("stale_ms", 2000))
+    win_cfg = vs_cfg.get("window") or {}
+    min_samples, _ = _window_sizes(win_cfg)
+    a_name = _short(str(venues["a"].get("name") or venues["a"].get("exchange")))
+    b_name = _short(str(venues["b"].get("name") or venues["b"].get("exchange")))
+    sa = accounts.get("a")
+    sb = accounts.get("b")
+    now = time.strftime("%H:%M:%S")
+    busy = f"执行 {busy_name}" if hedge_busy else "空闲"
+    width = 108
+    rule = _c("2", "─" * width)
+    lines = [
+        f"{_c('1', a_name)} vs {_c('1', b_name)}  {_c('2', now)}  "
+        f"{len(runtimes)}对  {busy}  "
+        f"{'真单' if live else '模拟'}  每所一条连接",
+        f"{a_name} 净值 {_fmt_money(sa.equity if sa else None)}  "
+        f"可用 {_fmt_money(sa.available if sa else None)}  {_acct_status(sa)}    "
+        f"{b_name} 净值 {_fmt_money(sb.equity if sb else None)}  "
+        f"可用 {_fmt_money(sb.available if sb else None)}  {_acct_status(sb)}",
+        rule,
+        f"{_pad('对', 5, '<')} {_pad('qty', 7)} "
+        f"{_pad(a_name + ' 买/卖', 28, '<')} {_pad(b_name + ' 买/卖', 28, '<')} "
+        f"{_pad('AB', 7)} {_pad('BA', 7)} {_pad('层', 6)} "
+        f"{_pad('动作', 12, '<')} 账本",
+    ]
+    for rt, tick, quotes_ok, qa, qb in ticks:
+        sample_n = 0
+        if rt.windows:
+            sample_n = min(rt.windows["ab"].stats().n, rt.windows["ba"].stats().n)
+        warm = sample_n >= min_samples
+        lots = rt.ledger.lots
+        ab = ba = None
+        if (
+            qa is not None
+            and qb is not None
+            and qa.bid is not None
+            and qa.ask is not None
+            and qb.bid is not None
+            and qb.ask is not None
+        ):
+            legs = list(_pair_legs_from_quotes(rt.venues, qa, qb))
+            ab, ba = legs[0].pct, legs[1].pct
+        led = rt.ledger.snapshot()
+        if led.state == "reconcile_fail":
+            book_s = _c("31", "对账失败")
+        elif not led.accounts_ready:
+            book_s = _c("33", "对账等待")
+        elif hedge_busy:
+            book_s = _c("33", "禁开")
+        else:
+            book_s = _c("2", "正常")
+        pa = _acct_display(accounts, rt.spec.book_a(), "a")
+        pb = _acct_display(accounts, rt.spec.book_b(), "b")
+        pos = f"{_fmt_pos(pa.pos_qty if pa else None)}/{_fmt_pos(pb.pos_qty if pb else None)}"
+        act = _pair_action_label(
+            tick, warm=warm, sample_n=sample_n, min_samples=min_samples, lots=lots
+        )
+        note = ""
+        if rt.last_layer:
+            note = "  " + _c("2", rt.last_layer[:36])
+        lines.append(
+            f"{_pad(rt.spec.name, 5, '<')} {_pad(f'{rt.spec.qty:g}', 7)} "
+            f"{_pad(_bbo_cell(qa, stale_ms), 28, '<')} "
+            f"{_pad(_bbo_cell(qb, stale_ms), 28, '<')} "
+            f"{_pad(_fmt_bp(ab), 7)} {_pad(_fmt_bp(ba), 7)} "
+            f"{_pad(f'{lots:+d}/{rt.grid.max_lots}', 6)} "
+            f"{_pad(act, 12, '<')} {book_s} {pos}{note}"
+        )
+        mag = tick.mag if tick else None
+        lower = tick.lower if tick else rt.grid.lower
+        upper = tick.upper if tick else rt.grid.upper
+        lines.append(
+            _c(
+                "2",
+                f"     {_band_bar(mag, lower, upper, 20)}  "
+                f"现 {_fmt_bp(mag)}  下 {_fmt_bp(lower, signed=False)}  "
+                f"上 {_fmt_bp(upper, signed=False)}  "
+                f"来回 {_fmt_bp(tick.cost if tick else rt.grid.cost, signed=False)}  "
+                f"×{rt.spec.fee_mult:g}"
+                + ("" if quotes_ok else "  行情过期只平"),
+            )
+        )
+    lines.append(rule)
+    return "\n".join(lines)
+
+
 def _acct_display(
     accounts: Optional[Dict[str, AccountSnap]],
     pos_key: str,
@@ -591,6 +778,7 @@ def _render(
     compact: bool = False,
     show_equity: bool = True,
     show_footer: bool = True,
+    observe: bool = True,
 ) -> tuple[str, Optional[GridTick], bool]:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
@@ -603,8 +791,22 @@ def _render(
     b_raw = str(b_cfg.get("name") or b_cfg.get("exchange"))
     a_name = _short(a_raw)
     b_name = _short(b_raw)
-    qa = quotes.get(key_a) or quotes.get("a")
-    qb = quotes.get(key_b) or quotes.get("b")
+    if observe:
+        tick, quotes_ok, qa, qb = _sync_pair_tick(
+            vs_cfg=vs_cfg,
+            venues=venues,
+            quotes=quotes,
+            windows=windows,
+            grid=grid,
+            ledger=ledger,
+            key_a=key_a,
+            key_b=key_b,
+        )
+    else:
+        qa = quotes.get(key_a) or quotes.get("a")
+        qb = quotes.get(key_b) or quotes.get("b")
+        quotes_ok = not (_is_stale(qa, stale_ms) or _is_stale(qb, stale_ms))
+        tick = grid.last if grid else None
     a_stale = _is_stale(qa, stale_ms)
     b_stale = _is_stale(qb, stale_ms)
     width = 76
@@ -701,7 +903,6 @@ def _render(
         )
 
     legs = []
-    tick = grid.last if grid else None
     have_book = (
         qa is not None
         and qb is not None
@@ -710,19 +911,8 @@ def _render(
         and qb.bid is not None
         and qb.ask is not None
     )
-    if have_book:
+    if have_book and qa is not None and qb is not None:
         legs = list(_pair_legs_from_quotes(venues, qa, qb))
-        if windows and not (a_stale or b_stale):
-            windows["ab"].add(legs[0].pct)
-            windows["ba"].add(legs[1].pct)
-        lots_now = ledger.lots if ledger is not None else (grid.lots if grid else 0)
-        if grid is not None and windows:
-            grid.observe(
-                windows["ab"].values(),
-                windows["ba"].values(),
-                lots_now,
-            )
-            tick = grid.peek(legs[0].pct, legs[1].pct, lots_now)
 
     sample_n = 0
     if windows:
@@ -730,7 +920,6 @@ def _render(
     warm = sample_n >= min_samples
 
     lots = ledger.lots if ledger is not None else (tick.lots if tick else (grid.lots if grid else 0))
-    quotes_ok = not (a_stale or b_stale)
     delta = _order_delta(tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy)
     win_keys = [("ab", a_name, b_name, 1), ("ba", b_name, a_name, -1)]
     if windows and not compact:
@@ -1121,46 +1310,59 @@ async def _print_loop(
                     break
 
             _clear_tty()
-            header = _c(
-                "2",
-                f"{time.strftime('%H:%M:%S')}  "
-                f"{_short(str(venues['a'].get('exchange')))}/"
-                f"{_short(str(venues['b'].get('exchange')))}  "
-                f"{len(runtimes)}对  "
-                + ("执行中 " + (busy_rt.spec.name if busy_rt else "") if hedge_busy else "空闲")
-                + "  行情/账户每所一条连接",
-            )
-            blocks = [header]
+            ticks: List[tuple] = []
             chosen: Optional[tuple[PairRuntime, Optional[GridTick], int, Dict[str, Quote]]] = None
-            for i, rt in enumerate(runtimes):
-                text, tick, quotes_ok = _render(
+            for rt in runtimes:
+                tick, quotes_ok, qa, qb = _sync_pair_tick(
                     vs_cfg=vs_cfg,
                     venues=rt.venues,
                     quotes=snap,
                     windows=rt.windows,
                     grid=rt.grid,
                     ledger=rt.ledger,
-                    accounts=acct,
-                    last_layer=rt.last_layer,
-                    hedge_busy=hedge_busy,
-                    live=live,
-                    pnl=rt.combined if not multi else None,
-                    paper=rt.paper,
                     key_a=rt.spec.book_a(),
                     key_b=rt.spec.book_b(),
-                    pair_name=rt.spec.name,
-                    compact=multi,
-                    show_equity=(i == 0),
-                    show_footer=not multi,
                 )
-                blocks.append(text)
                 rt.grid.lots = rt.ledger.lots
+                ticks.append((rt, tick, quotes_ok, qa, qb))
                 delta = _order_delta(
                     tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy
                 )
                 if chosen is None and delta:
                     chosen = (rt, tick, delta, snap)
-            print("\n".join(blocks), flush=True)
+            if multi:
+                text = _render_multi_board(
+                    vs_cfg=vs_cfg,
+                    venues=venues,
+                    runtimes=runtimes,
+                    quotes=snap,
+                    accounts=acct,
+                    hedge_busy=hedge_busy,
+                    busy_name=busy_rt.spec.name if busy_rt else "",
+                    live=live,
+                    ticks=ticks,
+                )
+            else:
+                rt0 = runtimes[0]
+                text, _, _ = _render(
+                    vs_cfg=vs_cfg,
+                    venues=rt0.venues,
+                    quotes=snap,
+                    windows=rt0.windows,
+                    grid=rt0.grid,
+                    ledger=rt0.ledger,
+                    accounts=acct,
+                    last_layer=rt0.last_layer,
+                    hedge_busy=hedge_busy,
+                    live=live,
+                    pnl=rt0.combined,
+                    paper=rt0.paper,
+                    key_a=rt0.spec.book_a(),
+                    key_b=rt0.spec.book_b(),
+                    pair_name=rt0.spec.name,
+                    observe=False,
+                )
+            print(text, flush=True)
             if chosen is not None:
                 rt, tick, delta, snap = chosen
                 ka, kb = rt.spec.book_a(), rt.spec.book_b()

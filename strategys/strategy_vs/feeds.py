@@ -136,6 +136,18 @@ def _same_symbol(have: str, want: str) -> bool:
     return a == b or a.startswith(b) or b.startswith(a)
 
 
+def _lighter_market_meta(adapter: Any, market_id: Any) -> Dict[str, Any]:
+    """WSS 回调的 market_id 常是 str，ETH 在 RH 上还是 0，必须按 int 对齐。"""
+    by_id = getattr(adapter, "_market_by_id", None) or {}
+    if market_id in by_id:
+        return by_id[market_id]
+    try:
+        mid = int(market_id)
+    except (TypeError, ValueError):
+        return {}
+    return by_id.get(mid) or {}
+
+
 def _pick_wanted_symbol(have: str, wanted: list) -> Optional[str]:
     for want in wanted:
         if _same_symbol(have, want):
@@ -403,10 +415,13 @@ async def _run_lighter(
     symbols = feed_symbols(venue_cfg)
     symbol = symbols[0] if symbols else str(venue_cfg.get("symbol") or "")
     exchange = str(venue_cfg.get("exchange") or "")
+    stale_ms = int(venue_cfg.get("stale_ms", 2000))
+    rest_interval = float(venue_cfg.get("rest_interval_sec", 1.0))
     loop = asyncio.get_running_loop()
     delay = 1.0
     account_index = int(getattr(adapter, "account_index", 0) or 0)
     rest_task: Optional[asyncio.Task] = None
+    book_rest_task: Optional[asyncio.Task] = None
     if accounts is not None:
         rest_task = asyncio.create_task(
             _account_rest_loop(
@@ -423,11 +438,68 @@ async def _run_lighter(
     def _book_key(sym: str) -> str:
         return slot_book_key(venue, sym)
 
+    async def rest_stale_books() -> None:
+        now = time.time()
+        snap = book.latest()
+        for matched in symbols:
+            key = _book_key(matched)
+            quote = snap.get(key)
+            if (
+                quote is not None
+                and quote.bid is not None
+                and quote.ask is not None
+                and not quote.error
+                and quote.ts
+                and (now - quote.ts) * 1000 <= stale_ms
+            ):
+                continue
+            try:
+                raw = await asyncio.wait_for(
+                    asyncio.to_thread(adapter.get_orderbook, matched, 1),
+                    timeout=8.0,
+                )
+            except Exception:
+                continue
+            payload = raw if isinstance(raw, dict) else {}
+            bid, ask, bid_sz, ask_sz = _bbo_from_book(
+                payload.get("bids"), payload.get("asks")
+            )
+            if bid is None and ask is None:
+                continue
+            await book.update(
+                Quote(
+                    venue=key,
+                    exchange=exchange,
+                    symbol=matched,
+                    bid=bid,
+                    ask=ask,
+                    bid_sz=bid_sz,
+                    ask_sz=ask_sz,
+                    ts=time.time(),
+                    source="rest",
+                )
+            )
+
+    async def book_rest_loop() -> None:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1.5)
+        except asyncio.TimeoutError:
+            pass
+        while not stop.is_set():
+            with contextlib.suppress(Exception):
+                await rest_stale_books()
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=rest_interval)
+            except asyncio.TimeoutError:
+                continue
+
+    book_rest_task = asyncio.create_task(book_rest_loop())
+
     def on_order_book_update(market_id, order_book):
         if stop.is_set():
             return
         payload = order_book if isinstance(order_book, dict) else {}
-        meta = getattr(adapter, "_market_by_id", {}).get(market_id) or {}
+        meta = _lighter_market_meta(adapter, market_id)
         have = str(meta.get("symbol") or payload.get("symbol") or payload.get("market") or "")
         matched = _pick_wanted_symbol(have, symbols) if have else None
         if matched is None and len(symbols) == 1:
@@ -575,10 +647,12 @@ async def _run_lighter(
                     with contextlib.suppress(asyncio.CancelledError):
                         await stop_task
     finally:
-        if rest_task is not None:
-            rest_task.cancel()
+        for task in (rest_task, book_rest_task):
+            if task is None:
+                continue
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await rest_task
+                await task
 
 
 async def _fetch_ondo_rest(adapter: Any, symbol: str) -> tuple[
