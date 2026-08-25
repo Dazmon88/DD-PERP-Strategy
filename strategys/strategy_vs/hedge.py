@@ -267,6 +267,21 @@ class LayerResult:
         }
 
 
+class _TapList(list):
+    """builtin list 在 3.11+ 不能改 append；用子类把每条日志同步写出。"""
+
+    def __init__(self, log: Callable[[str], None], seq: Optional[list] = None) -> None:
+        super().__init__(seq or [])
+        self._log = log
+
+    def append(self, msg: object) -> None:  # type: ignore[override]
+        super().append(msg)
+        try:
+            self._log(str(msg))
+        except Exception:
+            pass
+
+
 class DualLegBroker:
     """B 所按 role 执行；仓位有增量后 A 所市价补差。"""
 
@@ -377,16 +392,8 @@ class DualLegBroker:
 
     def _tap_logs(self, result: LayerResult) -> LayerResult:
         """result.logs 同步写到 DualLegBroker.log（vs_monitor 落 .log）。"""
-        _append = result.logs.append
-
-        def _append_and_log(msg: str) -> None:
-            _append(msg)
-            try:
-                self._log(str(msg))
-            except Exception:
-                pass
-
-        result.logs.append = _append_and_log  # type: ignore[method-assign]
+        if not isinstance(result.logs, _TapList):
+            result.logs = _TapList(self._log, list(result.logs))
         return result
 
     def _pos(self, which: str) -> Decimal:

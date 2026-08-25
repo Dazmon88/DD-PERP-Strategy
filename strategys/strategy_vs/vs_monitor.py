@@ -876,6 +876,7 @@ def _render_multi_board(
     accounts: Dict[str, AccountSnap],
     live: bool,
     ticks: List[tuple],
+    pnl: Optional[CombinedPnl] = None,
 ) -> str:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
@@ -887,17 +888,31 @@ def _render_multi_board(
     now = time.strftime("%H:%M:%S")
     running = [rt.spec.name for rt in runtimes if _pair_busy(rt)]
     busy = f"执行 {','.join(running)}" if running else "各对独立"
+    tot: Dict[str, Optional[float]] = {}
+    if pnl is not None:
+        tot = pnl.snapshot(
+            sa.equity if sa else None,
+            sb.equity if sb else None,
+            sa.available if sa else None,
+            sb.available if sb else None,
+        )
     w_pair, w_qty, w_bp, w_lot, w_act, w_led, w_pos = 5, 8, 7, 6, 10, 8, 15
     rule = _c("2", "─" * 118)
     lines = [
         f"{_c('1', a_name)} vs {_c('1', b_name)}   {_c('2', now)}   "
         f"{len(runtimes)}对   {busy}   "
         f"{'真单' if live else '模拟'}   每所一条连接",
-        f"{_pad('所', 6, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)}  账户源",
+        f"{_pad('所', 6, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)} {_pad('盈亏$', 12)}  账户源",
         f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), 12)} "
-        f"{_pad(_fmt_money(sa.available if sa else None), 12)}  {_acct_bal_status(sa)}",
+        f"{_pad(_fmt_money(sa.available if sa else None), 12)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl_a')), 12)}  {_acct_bal_status(sa)}",
         f"{_pad(b_name, 6, '<')} {_pad(_fmt_money(sb.equity if sb else None), 12)} "
-        f"{_pad(_fmt_money(sb.available if sb else None), 12)}  {_acct_bal_status(sb)}",
+        f"{_pad(_fmt_money(sb.available if sb else None), 12)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl_b')), 12)}  {_acct_bal_status(sb)}",
+        f"{_pad('合计', 6, '<')} {_pad(_fmt_money(tot.get('equity')), 12)} "
+        f"{_pad(_fmt_money(tot.get('available')), 12)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl')), 12)}  "
+        + (_c("33", "等待基线") if tot.get("pnl") is None else _c("2", "相对启动净值")),
         rule,
         f"{_pad('对', w_pair, '<')} {_pad('qty', w_qty)} "
         f"{_bbo_header(a_name)} {_bbo_header(b_name)} "
@@ -1084,13 +1099,25 @@ def _render(
 
     lines.append(rule)
     if show_equity:
+        sa0 = _acct_display(accounts, key_a, "a")
+        sb0 = _acct_display(accounts, key_b, "b")
+        tot: Dict[str, Optional[float]] = {}
+        if pnl is not None:
+            tot = pnl.snapshot(
+                sa0.equity if sa0 else None,
+                sb0.equity if sb0 else None,
+                sa0.available if sa0 else None,
+                sb0.available if sb0 else None,
+                sa0.pos_qty if sa0 else None,
+                sb0.pos_qty if sb0 else None,
+            )
         lines.append(
             f"{_pad('所', 8, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)} "
-            f"{_pad('仓位(币)', 12)}  源"
+            f"{_pad('盈亏$', 12)} {_pad('仓位(币)', 12)}  源"
         )
-        for name, slot, pos_key in (
-            (a_name, "a", key_a),
-            (b_name, "b", key_b),
+        for name, slot, pos_key, pnl_key in (
+            (a_name, "a", key_a, "pnl_a"),
+            (b_name, "b", key_b, "pnl_b"),
         ):
             snap = _acct_display(accounts, pos_key, slot)
             err = ""
@@ -1101,20 +1128,11 @@ def _render(
             lines.append(
                 f"{_pad(name, 8, '<')} {_pad(_fmt_money(snap.equity if snap else None), 12)} "
                 f"{_pad(_fmt_money(snap.available if snap else None), 12)} "
+                f"{_pad(_fmt_pnl(tot.get(pnl_key)), 12)} "
                 f"{_pad(_fmt_pos(snap.pos_qty if snap else None), 12)}  "
                 f"{_acct_status(snap)}{err}"
             )
-        if pnl is not None:
-            sa = _acct_display(accounts, key_a, "a")
-            sb = _acct_display(accounts, key_b, "b")
-            tot = pnl.snapshot(
-                sa.equity if sa else None,
-                sb.equity if sb else None,
-                sa.available if sa else None,
-                sb.available if sb else None,
-                sa.pos_qty if sa else None,
-                sb.pos_qty if sb else None,
-            )
+        if pnl is not None and tot:
             if tot["pnl"] is None:
                 src = _c("33", "等待基线")
             else:
@@ -1122,17 +1140,13 @@ def _render(
             lines.append(
                 f"{_pad('合计', 8, '<')} {_pad(_fmt_money(tot['equity']), 12)} "
                 f"{_pad(_fmt_money(tot['available']), 12)} "
+                f"{_pad(_fmt_pnl(tot['pnl']), 12)} "
                 f"{_pad(_fmt_pos(tot['net_pos']), 12)}  "
                 f"{src}"
             )
             if tot["base"] is not None:
                 lines.append(
-                    f"{_pad('', 8, '<')} "
-                    + _c("2", "A ")
-                    + _fmt_pnl(tot["pnl_a"])
-                    + _c("2", " / B ")
-                    + _fmt_pnl(tot["pnl_b"])
-                    + _c("2", f"  基线 {_fmt_money(tot['base'])}")
+                    _c("2", f"{_pad('', 8)}基线净值 {_fmt_money(tot['base'])}")
                 )
 
     if not compact:
@@ -1442,6 +1456,7 @@ async def _print_loop(
         rt.last_save = time.time()
         runtimes.append(rt)
 
+    session_pnl = CombinedPnl()
     last_align_any = 0.0
     align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
     if sys.stdout.isatty():
@@ -1569,6 +1584,7 @@ async def _print_loop(
                     accounts=acct,
                     live=live,
                     ticks=ticks,
+                    pnl=session_pnl,
                 )
             else:
                 rt0 = runtimes[0]
@@ -1583,7 +1599,7 @@ async def _print_loop(
                     last_layer=rt0.last_layer,
                     hedge_busy=_pair_busy(rt0),
                     live=live,
-                    pnl=rt0.combined,
+                    pnl=session_pnl,
                     paper=rt0.paper,
                     key_a=rt0.spec.book_a(),
                     key_b=rt0.spec.book_b(),
