@@ -849,6 +849,7 @@ async def _print_loop(
             live=True,
             b_maker=b_maker,
             pos_lookup=lambda slot: _wss_pos(accounts, slot),
+            pos_apply=lambda slot, qty: accounts.apply_fill(slot, qty),
             bbo_lookup=lambda: _wss_bbo_b(book),
         )
         print(

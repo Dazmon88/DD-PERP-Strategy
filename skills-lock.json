@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "surf": {
+      "source": "asksurf-ai/surf-skills",
+      "sourceType": "github",
+      "skillPath": "skills/surf/SKILL.md",
+      "computedHash": "32093c9740d573b5ec1f6cdbec1fb3a711853aa26522754bd2e0faa0776c0680"
+    }
+  }
+}

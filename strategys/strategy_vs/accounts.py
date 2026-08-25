@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+_POS_EPS = 1e-12
 
 
 @dataclass
@@ -20,39 +23,167 @@ class AccountSnap:
     error: str = ""
 
 
+def _peer_slot(venue: str) -> Optional[str]:
+    if venue == "a":
+        return "b"
+    if venue == "b":
+        return "a"
+    return None
+
+
 class AccountBook:
+    """仓位：非 0 立刻采用；裸 0 / 空推送沿用上次非 0，直到 REST 与对侧都确认空仓，或本地成交把仓打到 0。"""
+
     def __init__(self) -> None:
         self._data: Dict[str, AccountSnap] = {}
         self._lock = asyncio.Lock()
+        self._tlock = threading.Lock()
+        self._sticky: Dict[str, float] = {}
+        self._flat_ok: set[str] = set()
+        self._last_rest: Dict[str, float] = {}
 
-    async def patch(self, snap: AccountSnap) -> None:
-        async with self._lock:
-            incoming_balance = snap.equity is not None or snap.available is not None
-            prev = self._data.get(snap.venue)
-            if prev is not None and not snap.error:
+    def _peer_pos(self, venue: str) -> Optional[float]:
+        slot = _peer_slot(venue)
+        if slot is None:
+            return None
+        snap = self._data.get(slot)
+        if snap is None or snap.pos_qty is None:
+            return None
+        return float(snap.pos_qty)
+
+    def _resolve_pos(
+        self, venue: str, raw: float, *, source: str, prev: Optional[AccountSnap]
+    ) -> float:
+        sticky = self._sticky.get(venue)
+        if sticky is None and prev is not None and prev.pos_qty is not None:
+            if abs(float(prev.pos_qty)) > _POS_EPS:
+                sticky = float(prev.pos_qty)
+                self._sticky[venue] = sticky
+        src = (source or "").lower()
+        if src == "rest":
+            self._last_rest[venue] = float(raw)
+        if abs(raw) > _POS_EPS:
+            self._sticky[venue] = float(raw)
+            self._flat_ok.discard(venue)
+            return float(raw)
+        # raw ≈ 0
+        if venue in self._flat_ok:
+            self._sticky[venue] = 0.0
+            return 0.0
+        if sticky is None or abs(sticky) <= _POS_EPS:
+            self._sticky[venue] = 0.0
+            return 0.0
+        peer = self._peer_pos(venue)
+        peer_slot = _peer_slot(venue)
+        peer_rest = self._last_rest.get(peer_slot) if peer_slot else None
+        rest_confirms = src == "rest" and (
+            (peer is not None and abs(peer) <= _POS_EPS)
+            or (peer_rest is not None and abs(peer_rest) <= _POS_EPS)
+        )
+        if rest_confirms:
+            self._sticky[venue] = 0.0
+            self._flat_ok.add(venue)
+            if (
+                peer_slot
+                and peer_rest is not None
+                and abs(peer_rest) <= _POS_EPS
+            ):
+                self._flat_ok.add(peer_slot)
+                self._sticky[peer_slot] = 0.0
+                other = self._data.get(peer_slot)
+                if other is not None:
+                    other.pos_qty = 0.0
+            return 0.0
+        return sticky
+
+    def _commit(self, snap: AccountSnap) -> None:
+        incoming_balance = snap.equity is not None or snap.available is not None
+        prev = self._data.get(snap.venue)
+        raw_pos = snap.pos_qty
+        if snap.error:
+            if prev is not None:
                 if snap.equity is None:
                     snap.equity = prev.equity
                 if snap.available is None:
                     snap.available = prev.available
-                if snap.pos_qty is None:
-                    snap.pos_qty = prev.pos_qty
-                    if not snap.pos_symbol:
-                        snap.pos_symbol = prev.pos_symbol
-                if not snap.source:
-                    snap.source = prev.source
-            if incoming_balance:
-                snap.balance_ts = float(snap.ts or time.time())
-            elif prev is not None:
-                snap.balance_ts = float(prev.balance_ts or 0.0)
+                snap.pos_qty = prev.pos_qty
+                if not snap.pos_symbol:
+                    snap.pos_symbol = prev.pos_symbol
+            snap.balance_ts = (
+                float(prev.balance_ts or 0.0) if prev is not None else 0.0
+            )
             self._data[snap.venue] = snap
+            return
+        if prev is not None:
+            if snap.equity is None:
+                snap.equity = prev.equity
+            if snap.available is None:
+                snap.available = prev.available
+            if not snap.source:
+                snap.source = prev.source
+            if not snap.pos_symbol:
+                snap.pos_symbol = prev.pos_symbol
+        if raw_pos is None:
+            snap.pos_qty = prev.pos_qty if prev is not None else None
+        else:
+            snap.pos_qty = self._resolve_pos(
+                snap.venue, float(raw_pos), source=snap.source, prev=prev
+            )
+        if incoming_balance:
+            snap.balance_ts = float(snap.ts or time.time())
+        elif prev is not None:
+            snap.balance_ts = float(prev.balance_ts or 0.0)
+        self._data[snap.venue] = snap
+
+    async def patch(self, snap: AccountSnap) -> None:
+        async with self._lock:
+            with self._tlock:
+                self._commit(snap)
+
+    def apply_fill(self, venue: str, signed_delta: float) -> Optional[float]:
+        """本地乐观成交：对冲下单成功后立刻改粘性仓，避免 WSS 仍是 0 时连打。"""
+        delta = float(signed_delta)
+        if abs(delta) <= _POS_EPS:
+            return None
+        with self._tlock:
+            prev = self._data.get(venue)
+            cur = 0.0
+            if prev is not None and prev.pos_qty is not None:
+                cur = float(prev.pos_qty)
+            elif venue in self._sticky:
+                cur = float(self._sticky[venue])
+            new = cur + delta
+            if abs(new) <= _POS_EPS:
+                new = 0.0
+                self._flat_ok.add(venue)
+                self._sticky[venue] = 0.0
+            else:
+                self._flat_ok.discard(venue)
+                self._sticky[venue] = new
+            now = time.time()
+            if prev is None:
+                self._data[venue] = AccountSnap(
+                    venue=venue,
+                    pos_qty=new,
+                    source="local",
+                    ts=now,
+                )
+            else:
+                prev.pos_qty = new
+                prev.source = "local"
+                prev.ts = now
+                prev.error = ""
+            return new
 
     async def snapshot(self) -> Dict[str, AccountSnap]:
         async with self._lock:
-            return dict(self._data)
+            with self._tlock:
+                return dict(self._data)
 
     def latest(self) -> Dict[str, AccountSnap]:
-        """无锁快照，供同步执行器读 WSS 缓存。"""
-        return dict(self._data)
+        """供同步执行器读仓；含粘性仓（未确认的 0 不会盖掉上次非 0）。"""
+        with self._tlock:
+            return dict(self._data)
 
 
 def _add_opt(left: Optional[float], right: Optional[float]) -> Optional[float]:
@@ -215,6 +346,11 @@ def parse_lighter_account(payload: Any) -> Dict[str, Optional[float]]:
 
 
 def parse_lighter_positions(payload: Any, symbol: str) -> Optional[float]:
+    """解析 Lighter account_all 仓位。
+
+    None = 本条不含该品种（空列表/增量），调用方不得写成 0。
+    0.0 = 推送里明确匹配到该品种且仓为 0。
+    """
     data = payload if isinstance(payload, dict) else {}
     positions = data.get("positions")
     if positions is None and isinstance(data.get("account"), dict):
@@ -225,6 +361,8 @@ def parse_lighter_positions(payload: Any, symbol: str) -> Optional[float]:
     elif isinstance(positions, list):
         rows = positions
     elif positions is None:
+        return None
+    if not rows:
         return None
     best: Optional[float] = None
     matched = False
@@ -250,8 +388,8 @@ def parse_lighter_positions(payload: Any, symbol: str) -> Optional[float]:
         if have:
             break
     if matched:
-        return best
-    return 0.0
+        return best if best is not None else 0.0
+    return None
 
 
 def parse_ondo_balance(message: Any) -> Dict[str, Optional[float]]:
@@ -373,4 +511,5 @@ def from_adapter_balance(balance: Any, positions: Any, symbol: str) -> Dict[str,
         "equity": equity,
         "available": available,
         "pos_qty": pos_qty if found else 0.0,
+        "pos_found": found,
     }

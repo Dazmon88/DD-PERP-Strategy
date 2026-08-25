@@ -211,6 +211,7 @@ class DualLegBroker:
         max_chase: int = 8,
         log: Optional[Callable[[str], None]] = None,
         pos_lookup: Optional[Callable[[str], Optional[Decimal]]] = None,
+        pos_apply: Optional[Callable[[str, float], Any]] = None,
         bbo_lookup: Optional[Callable[[], tuple[Optional[Decimal], Optional[Decimal]]]] = None,
         rest_ok: Optional[Callable[[], bool]] = None,
     ) -> None:
@@ -226,6 +227,7 @@ class DualLegBroker:
         self.max_chase = max(0, int(max_chase))
         self._log = log or (lambda _msg: None)
         self._pos_lookup = pos_lookup
+        self._pos_apply = pos_apply
         self._bbo_lookup = bbo_lookup
         self._rest_ok = rest_ok
         self.qty_per_layer: float = 0.0
@@ -238,6 +240,12 @@ class DualLegBroker:
         adapter = self.adapter_a if which == "a" else self.adapter_b
         symbol = self.symbol_a if which == "a" else self.symbol_b
         return signed_pos(adapter, symbol)
+
+    def _credit_a(self, side: str, qty: Decimal) -> None:
+        if self._pos_apply is None or qty <= 0:
+            return
+        signed = float(qty if side == "buy" else -qty)
+        self._pos_apply("a", signed)
 
     def _quotes_b(self) -> tuple[Optional[Decimal], Optional[Decimal]]:
         if self._bbo_lookup is not None:
@@ -310,12 +318,17 @@ class DualLegBroker:
 
                 a_aligned = abs(gap_a) <= tol
                 b_done = abs(pos_b - (before_b + signed_b)) <= tol
+                b_moved = abs(pos_b - before_b) > tol
 
                 if a_aligned and b_done:
                     break
 
-                # A 对冲：每 hedge_cooldown_sec 最多触发一次
-                if not a_aligned and time.time() - last_align_ts >= hedge_cooldown_sec:
+                # A 只在 B 本层有增量后才对冲，避免 WSS 假 0 空转
+                if (
+                    b_moved
+                    and not a_aligned
+                    and time.time() - last_align_ts >= hedge_cooldown_sec
+                ):
                     side = "buy" if gap_a > 0 else "sell"
                     qty_a = abs(gap_a)
                     order, err = _place_taker(
@@ -339,6 +352,7 @@ class DualLegBroker:
                         result.a.order_id = oid or result.a.order_id
                         result.a_order_count += 1
                         result.a_order_qty += qty_a
+                        self._credit_a(side, qty_a)
                         msg = (
                             f"A {side} {qty_a} "
                             f"pos_a={pos_a:+.8f}→target={cur_target_a:+.8f} "
@@ -456,7 +470,7 @@ class DualLegBroker:
             if order_id:
                 _cancel(self.adapter_b, order_id)
 
-        # 收尾：再对齐一次 A
+        # 收尾：B 有增量才再对齐 A（B 没动则不因假 0 去打 Lighter）
         pos_b = self._pos("b")
         pos_a = self._pos("a")
         cur_target_a = -pos_b
@@ -465,7 +479,8 @@ class DualLegBroker:
         result.logs.append(
             f"仓位 A {before_a:+.8f}→{pos_a:+.8f} B {before_b:+.8f}→{pos_b:+.8f}"
         )
-        self._align_a(cur_target_a, result, label="收尾对冲")
+        if abs(pos_b - before_b) > tol:
+            self._align_a(cur_target_a, result, label="收尾对冲")
 
         # 两腿齐：用仓位对齐判断；成功/失败都优先按交易所绝对仓认领，避免账本归零叠仓
         pos_a = self._pos("a")
@@ -533,6 +548,7 @@ class DualLegBroker:
         result.a.order_id = oid or result.a.order_id
         result.a_order_count += 1
         result.a_order_qty += qty
+        self._credit_a(side, qty)
         msg = (
             f"A {label} {side} {qty} "
             f"pos_a={pos_a:+.8f}→target={target_a:+.8f} "
@@ -600,7 +616,7 @@ class DualLegBroker:
         fields["a_order_id"] = oid
         fields["a_order_count"] = 1
         fields["a_order_qty"] = float(order_qty)
-        # 下单后尽量再读一次 A 仓（WSS 可能仍滞后）
+        self._credit_a(side, order_qty)
         pos_a2 = self._pos("a")
         fields["pos_a_after"] = float(pos_a2)
         fields["pos_b_after"] = float(self._pos("b"))
