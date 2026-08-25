@@ -294,16 +294,19 @@ class SpreadGrid:
         lots = int(current_lots)
         n = abs(lots)
         d = int(delta)
-        if d > 0:
-            if lots >= 0:
-                edge = float(ab_pct) if lots > 0 else self._hold_edge(ab_pct, ba_pct, 0)[0]
-                base = n if lots > 0 else 0
-                return edge > self.upper + base * self.step
-            return float(ba_pct) > self.upper
-        if lots <= 0:
-            if lots == 0:
-                edge = self._hold_edge(ab_pct, ba_pct, 0)[0]
+        if lots == 0:
+            edge, sign = self._hold_edge(ab_pct, ba_pct, 0)
+            # 空仓：跟上沿同向开（更好的一侧突破），或按下沿反向开
+            if d == sign:
+                return edge > self.upper
+            if d == -sign:
                 return edge < self.lower
+            return False
+        if d > 0:
+            if lots > 0:
+                return float(ab_pct) > self.upper + n * self.step
+            return float(ba_pct) > self.upper
+        if lots < 0:
             return float(ba_pct) < self.lower - n * self.step
         return float(ab_pct) < self.lower
 

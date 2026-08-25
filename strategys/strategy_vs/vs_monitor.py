@@ -373,6 +373,21 @@ def _maker_rest_ok(
     return grid.rest_ok(delta, ab.pct, ba.pct, current_lots)
 
 
+def _signal_score(tick: Optional[GridTick], delta: int) -> float:
+    """出带越深越优先，避免永远只执行 CSV 第一对。"""
+    if tick is None or delta not in (-1, 1):
+        return -1.0
+    mag = tick.mag
+    lo, hi = tick.lower, tick.upper
+    if mag is None:
+        return 0.0
+    if lo is not None and mag < lo:
+        return float(lo - mag)
+    if hi is not None and mag > hi:
+        return float(mag - hi)
+    return 0.0
+
+
 def _order_delta(
     tick: Optional[GridTick],
     ledger: Optional[PositionLedger],
@@ -680,15 +695,25 @@ def _pair_action_label(
     sample_n: int,
     min_samples: int,
     lots: int,
+    ledger: Optional[PositionLedger] = None,
+    hedge_busy: bool = False,
 ) -> str:
     if not warm:
         return _c("2", f"采样{sample_n}/{min_samples}")
+    blocked = False
+    if tick is not None and int(getattr(tick, "delta", 0) or 0) in (-1, 1):
+        if hedge_busy:
+            blocked = True
+        elif ledger is not None and not ledger.can_submit(int(tick.delta)):
+            blocked = True
     if tick and tick.action == "开仓":
+        if blocked:
+            return _c("33", "排队" if hedge_busy else "禁开")
         return _c("1;32", "开仓")
     if tick and tick.action == "加仓":
-        return _c("1;36", "加仓")
+        return _c("33", "排队") if blocked else _c("1;36", "加仓")
     if tick and tick.action == "反向":
-        return _c("1;35", "反向")
+        return _c("33", "排队") if blocked else _c("1;35", "反向")
     if tick and tick.action == "减仓":
         return _c("33", "减仓")
     if tick and tick.action == "持有":
@@ -758,15 +783,25 @@ def _render_multi_board(
             book_s = _c("31", "对账失败")
         elif not led.accounts_ready:
             book_s = _c("33", "对账等待")
+        elif hedge_busy and busy_name == rt.spec.name:
+            book_s = _c("33", "在途")
         elif hedge_busy:
-            book_s = _c("33", "禁开")
+            book_s = _c("33", "排队")
+        elif not led.can_open:
+            book_s = _c("33", "只平")
         else:
             book_s = _c("2", "正常")
         pa = _acct_display(accounts, rt.spec.book_a(), "a")
         pb = _acct_display(accounts, rt.spec.book_b(), "b")
         pos = f"{_fmt_pos(pa.pos_qty if pa else None)}/{_fmt_pos(pb.pos_qty if pb else None)}"
         act = _pair_action_label(
-            tick, warm=warm, sample_n=sample_n, min_samples=min_samples, lots=lots
+            tick,
+            warm=warm,
+            sample_n=sample_n,
+            min_samples=min_samples,
+            lots=lots,
+            ledger=rt.ledger,
+            hedge_busy=hedge_busy,
         )
         extra = ""
         if rt.last_layer:
@@ -1313,27 +1348,28 @@ async def _print_loop(
             snap = await book.snapshot()
             acct = await accounts.snapshot()
             stale_sec = float(vs_cfg.get("account_stale_sec", 15.0))
-            if not hedge_busy:
-                for rt in runtimes:
-                    ka, kb = rt.spec.book_a(), rt.spec.book_b()
-                    if (not rt.ledger.accounts_ready) or (
-                        now - rt.last_recon >= lcfg["reconcile_interval_sec"]
-                    ):
-                        pos_a, ts_a = _acct_pos(acct.get(ka), now, stale_sec)
-                        pos_b, ts_b = _acct_pos(acct.get(kb), now, stale_sec)
-                        rt.ledger.reconcile(
-                            pos_a,
-                            pos_b,
-                            ts_a,
-                            ts_b,
-                            now=now,
-                            live=live,
-                        )
-                        if rt.ledger.accounts_ready:
-                            rt.last_recon = now
-                            n = abs(rt.ledger.lots)
-                            if n and rt.grid.peak_n < n:
-                                rt.grid.peak_n = n
+            for rt in runtimes:
+                if rt.ledger.inflight:
+                    continue
+                ka, kb = rt.spec.book_a(), rt.spec.book_b()
+                if (not rt.ledger.accounts_ready) or (
+                    now - rt.last_recon >= lcfg["reconcile_interval_sec"]
+                ):
+                    pos_a, ts_a = _acct_pos(acct.get(ka), now, stale_sec)
+                    pos_b, ts_b = _acct_pos(acct.get(kb), now, stale_sec)
+                    rt.ledger.reconcile(
+                        pos_a,
+                        pos_b,
+                        ts_a,
+                        ts_b,
+                        now=now,
+                        live=live,
+                    )
+                    if rt.ledger.accounts_ready:
+                        rt.last_recon = now
+                        n = abs(rt.ledger.lots)
+                        if n and rt.grid.peak_n < n:
+                            rt.grid.peak_n = n
 
             if (
                 live
@@ -1379,6 +1415,7 @@ async def _print_loop(
             _clear_tty()
             ticks: List[tuple] = []
             chosen: Optional[tuple[PairRuntime, Optional[GridTick], int, Dict[str, Quote]]] = None
+            chosen_score = -1.0
             for rt in runtimes:
                 tick, quotes_ok, qa, qb = _sync_pair_tick(
                     vs_cfg=vs_cfg,
@@ -1395,8 +1432,12 @@ async def _print_loop(
                 delta = _order_delta(
                     tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy
                 )
-                if chosen is None and delta:
+                if not delta:
+                    continue
+                score = _signal_score(tick, delta)
+                if chosen is None or score > chosen_score:
                     chosen = (rt, tick, delta, snap)
+                    chosen_score = score
             if multi:
                 text = _render_multi_board(
                     vs_cfg=vs_cfg,
