@@ -23,14 +23,6 @@ class AccountSnap:
     error: str = ""
 
 
-def _peer_slot(venue: str) -> Optional[str]:
-    if venue == "a":
-        return "b"
-    if venue == "b":
-        return "a"
-    return None
-
-
 class AccountBook:
     """仓位：非 0 立刻采用；裸 0 / 空推送沿用上次非 0，直到 REST 与对侧都确认空仓，或本地成交把仓打到 0。"""
 
@@ -41,9 +33,36 @@ class AccountBook:
         self._sticky: Dict[str, float] = {}
         self._flat_ok: set[str] = set()
         self._last_rest: Dict[str, float] = {}
+        self._peers: Dict[str, str] = {}
+
+    def set_peers(self, mapping: Dict[str, str]) -> None:
+        """品种级对锁：a:QQQ ↔ b:QQQ-USD.P，避免多品种共用 a/b 把仓位盖掉。"""
+        peers: Dict[str, str] = {}
+        for left, right in mapping.items():
+            if not left or not right:
+                continue
+            peers[str(left)] = str(right)
+            peers[str(right)] = str(left)
+        with self._tlock:
+            self._peers = peers
+
+    def _peer_slot(self, venue: str) -> Optional[str]:
+        mapped = self._peers.get(venue)
+        if mapped:
+            return mapped
+        if venue == "a":
+            return "b"
+        if venue == "b":
+            return "a"
+        if ":" in venue:
+            slot, _, rest = venue.partition(":")
+            other = "b" if slot == "a" else "a" if slot == "b" else ""
+            if other:
+                return f"{other}:{rest}"
+        return None
 
     def _peer_pos(self, venue: str) -> Optional[float]:
-        slot = _peer_slot(venue)
+        slot = self._peer_slot(venue)
         if slot is None:
             return None
         snap = self._data.get(slot)
@@ -74,7 +93,7 @@ class AccountBook:
             self._sticky[venue] = 0.0
             return 0.0
         peer = self._peer_pos(venue)
-        peer_slot = _peer_slot(venue)
+        peer_slot = self._peer_slot(venue)
         peer_rest = self._last_rest.get(peer_slot) if peer_slot else None
         rest_confirms = src == "rest" and (
             (peer is not None and abs(peer) <= _POS_EPS)
@@ -392,6 +411,39 @@ def parse_lighter_positions(payload: Any, symbol: str) -> Optional[float]:
     return None
 
 
+def parse_lighter_positions_map(payload: Any) -> Dict[str, float]:
+    """一条 account_all 拆成 {symbol: 仓位}，供多品种共享同一账户推送。"""
+    data = payload if isinstance(payload, dict) else {}
+    positions = data.get("positions")
+    if positions is None and isinstance(data.get("account"), dict):
+        positions = data["account"].get("positions")
+    rows: list = []
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    out: Dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        have = str(row.get("symbol") or row.get("market") or "").strip()
+        if not have:
+            continue
+        size = _to_float(row.get("position") or row.get("size") or row.get("qty"))
+        if size is None:
+            continue
+        sign = row.get("sign")
+        if sign is not None:
+            try:
+                signed = abs(size) if int(sign) > 0 else -abs(size)
+            except (TypeError, ValueError):
+                signed = size
+        else:
+            signed = size
+        out[have] = float(signed)
+    return out
+
+
 def parse_ondo_balance(message: Any) -> Dict[str, Optional[float]]:
     data = message.get("data") if isinstance(message, dict) else message
     if isinstance(data, list) and data:
@@ -429,6 +481,32 @@ def parse_ondo_positions(message: Any, symbol: str) -> Optional[float]:
     if found:
         return qty
     return 0.0 if is_list else None
+
+
+def parse_ondo_positions_map(message: Any) -> Dict[str, float]:
+    """一条 positions 推送拆成 {market: 仓位}。"""
+    data = message.get("data") if isinstance(message, dict) else message
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    out: Dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("market") or "").strip()
+        if not market:
+            continue
+        size = _to_float(row.get("netQuantity") or row.get("quantity") or row.get("size"))
+        if size is None:
+            continue
+        direction = str(row.get("direction") or row.get("side") or "").lower()
+        if direction in ("neutral",):
+            out[market] = 0.0
+            continue
+        signed = -abs(size) if direction == "short" else abs(size)
+        if abs(signed) < 1e-18:
+            out[market] = 0.0
+        else:
+            out[market] = float(signed)
+    return out
 
 
 def _popdex_symbol_match(have: str, want: str) -> bool:

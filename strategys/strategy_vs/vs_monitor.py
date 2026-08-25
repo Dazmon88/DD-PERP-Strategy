@@ -17,7 +17,8 @@ import time
 import unicodedata
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -40,6 +41,15 @@ from feeds import (  # noqa: E402
     venue_role,
 )
 from hedge import DualLegBroker  # noqa: E402
+from pairs import (  # noqa: E402
+    PairSpec,
+    enabled_pairs,
+    load_pairs,
+    pair_venues,
+    peer_map,
+    resolve_pairs_path,
+    symbols_for_slot,
+)
 from journal import PaperJournal  # noqa: E402
 from ledger import PositionLedger, SimBroker  # noqa: E402
 from spread import (  # noqa: E402
@@ -54,6 +64,26 @@ from spread import (  # noqa: E402
     save_windows,
     window_identity,
 )
+
+
+@dataclass
+class PairRuntime:
+    spec: PairSpec
+    venues: Dict[str, Dict[str, Any]]
+    windows: Dict[str, SpreadWindow]
+    grid: SpreadGrid
+    ledger: PositionLedger
+    sim: Optional[SimBroker]
+    hedge: Optional[DualLegBroker]
+    paper: PaperJournal
+    identity: Dict[str, Any]
+    store_path: Path
+    combined: CombinedPnl = field(default_factory=CombinedPnl)
+    last_layer: str = ""
+    last_recon: float = 0.0
+    last_align: float = 0.0
+    last_save: float = 0.0
+    pending_log: Optional[Dict[str, Any]] = None
 
 
 def _load_yaml(path: str) -> dict:
@@ -326,10 +356,12 @@ def _maker_rest_ok(
     grid: SpreadGrid,
     delta: int,
     current_lots: int,
+    key_a: str = "a",
+    key_b: str = "b",
 ) -> bool:
     quotes = book.latest()
-    qa = quotes.get("a")
-    qb = quotes.get("b")
+    qa = quotes.get(key_a)
+    qb = quotes.get(key_b)
     if (
         qa is None
         or qb is None
@@ -439,11 +471,15 @@ def _wss_pos(accounts: AccountBook, slot: str) -> Optional[Decimal]:
     return Decimal(str(snap.pos_qty))
 
 
-def _wss_bbo_b(book: QuoteBook) -> tuple[Optional[Decimal], Optional[Decimal]]:
-    quote = book.latest().get("b")
+def _wss_bbo(book: QuoteBook, key: str = "b") -> tuple[Optional[Decimal], Optional[Decimal]]:
+    quote = book.latest().get(key)
     if quote is None or quote.bid is None or quote.ask is None:
         return None, None
     return Decimal(str(quote.bid)), Decimal(str(quote.ask))
+
+
+def _wss_bbo_b(book: QuoteBook) -> tuple[Optional[Decimal], Optional[Decimal]]:
+    return _wss_bbo(book, "b")
 
 
 def _state_bar(state: str, accounts_ready: bool = True) -> str:
@@ -508,6 +544,33 @@ def _leg_action(lots: int, delta: int, side: int) -> str:
     return _c("2", "对侧")
 
 
+def _acct_display(
+    accounts: Optional[Dict[str, AccountSnap]],
+    pos_key: str,
+    slot: str,
+) -> Optional[AccountSnap]:
+    """净值看所级账户，仓位看品种 key。"""
+    pos = (accounts or {}).get(pos_key)
+    bal = (accounts or {}).get(slot)
+    if pos is None and bal is None:
+        return None
+    if pos is None:
+        return bal
+    if bal is None:
+        return pos
+    return AccountSnap(
+        venue=pos.venue,
+        equity=bal.equity if bal.equity is not None else pos.equity,
+        available=bal.available if bal.available is not None else pos.available,
+        pos_qty=pos.pos_qty,
+        pos_symbol=pos.pos_symbol or bal.pos_symbol,
+        source=pos.source or bal.source,
+        ts=max(float(pos.ts or 0), float(bal.ts or 0)),
+        balance_ts=float(bal.balance_ts or pos.balance_ts or 0),
+        error=pos.error or bal.error,
+    )
+
+
 def _render(
     *,
     vs_cfg: Dict[str, Any],
@@ -522,6 +585,12 @@ def _render(
     live: bool = False,
     pnl: Optional[CombinedPnl] = None,
     paper: Optional[PaperJournal] = None,
+    key_a: str = "a",
+    key_b: str = "b",
+    pair_name: str = "",
+    compact: bool = False,
+    show_equity: bool = True,
+    show_footer: bool = True,
 ) -> tuple[str, Optional[GridTick], bool]:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
@@ -534,15 +603,16 @@ def _render(
     b_raw = str(b_cfg.get("name") or b_cfg.get("exchange"))
     a_name = _short(a_raw)
     b_name = _short(b_raw)
-    qa = quotes.get("a")
-    qb = quotes.get("b")
+    qa = quotes.get(key_a) or quotes.get("a")
+    qb = quotes.get(key_b) or quotes.get("b")
     a_stale = _is_stale(qa, stale_ms)
     b_stale = _is_stale(qb, stale_ms)
     width = 76
     rule = _c("2", "─" * width)
     now = time.strftime("%H:%M:%S")
+    title_pair = pair_name or f"{a_cfg.get('symbol')} / {b_cfg.get('symbol')}"
     title_l = (
-        f"{_c('1', a_name)} {_c('2', str(a_cfg.get('symbol')))}  vs  "
+        f"{_c('1', title_pair)}  {_c('1', a_name)} {_c('2', str(a_cfg.get('symbol')))}  vs  "
         f"{_c('1', b_name)} {_c('2', str(b_cfg.get('symbol')))}"
     )
     title_r = _c("2", f"{now}  价差网格")
@@ -570,60 +640,65 @@ def _render(
         )
 
     lines.append(rule)
-    lines.append(
-        f"{_pad('所', 8, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)} "
-        f"{_pad('仓位(币)', 12)}  源"
-    )
-    for name, slot in ((a_name, "a"), (b_name, "b")):
-        snap = (accounts or {}).get(slot)
-        err = ""
-        if snap and snap.error and (
-            snap.equity is not None or snap.available is not None or snap.pos_qty is not None
+    if show_equity:
+        lines.append(
+            f"{_pad('所', 8, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)} "
+            f"{_pad('仓位(币)', 12)}  源"
+        )
+        for name, slot, pos_key in (
+            (a_name, "a", key_a),
+            (b_name, "b", key_b),
         ):
-            err = "  " + _c("33", str(snap.error)[:24])
-        lines.append(
-            f"{_pad(name, 8, '<')} {_pad(_fmt_money(snap.equity if snap else None), 12)} "
-            f"{_pad(_fmt_money(snap.available if snap else None), 12)} "
-            f"{_pad(_fmt_pos(snap.pos_qty if snap else None), 12)}  "
-            f"{_acct_status(snap)}{err}"
-        )
-    if pnl is not None:
-        sa = (accounts or {}).get("a")
-        sb = (accounts or {}).get("b")
-        tot = pnl.snapshot(
-            sa.equity if sa else None,
-            sb.equity if sb else None,
-            sa.available if sa else None,
-            sb.available if sb else None,
-            sa.pos_qty if sa else None,
-            sb.pos_qty if sb else None,
-        )
-        if tot["pnl"] is None:
-            src = _c("33", "等待基线")
-        else:
-            src = "盈亏 " + _fmt_pnl(tot["pnl"])
-        lines.append(
-            f"{_pad('合计', 8, '<')} {_pad(_fmt_money(tot['equity']), 12)} "
-            f"{_pad(_fmt_money(tot['available']), 12)} "
-            f"{_pad(_fmt_pos(tot['net_pos']), 12)}  "
-            f"{src}"
-        )
-        if tot["base"] is not None:
+            snap = _acct_display(accounts, pos_key, slot)
+            err = ""
+            if snap and snap.error and (
+                snap.equity is not None or snap.available is not None or snap.pos_qty is not None
+            ):
+                err = "  " + _c("33", str(snap.error)[:24])
             lines.append(
-                f"{_pad('', 8, '<')} "
-                + _c("2", "A ")
-                + _fmt_pnl(tot["pnl_a"])
-                + _c("2", " / B ")
-                + _fmt_pnl(tot["pnl_b"])
-                + _c("2", f"  基线 {_fmt_money(tot['base'])}")
+                f"{_pad(name, 8, '<')} {_pad(_fmt_money(snap.equity if snap else None), 12)} "
+                f"{_pad(_fmt_money(snap.available if snap else None), 12)} "
+                f"{_pad(_fmt_pos(snap.pos_qty if snap else None), 12)}  "
+                f"{_acct_status(snap)}{err}"
             )
+        if pnl is not None:
+            sa = _acct_display(accounts, key_a, "a")
+            sb = _acct_display(accounts, key_b, "b")
+            tot = pnl.snapshot(
+                sa.equity if sa else None,
+                sb.equity if sb else None,
+                sa.available if sa else None,
+                sb.available if sb else None,
+                sa.pos_qty if sa else None,
+                sb.pos_qty if sb else None,
+            )
+            if tot["pnl"] is None:
+                src = _c("33", "等待基线")
+            else:
+                src = "盈亏 " + _fmt_pnl(tot["pnl"])
+            lines.append(
+                f"{_pad('合计', 8, '<')} {_pad(_fmt_money(tot['equity']), 12)} "
+                f"{_pad(_fmt_money(tot['available']), 12)} "
+                f"{_pad(_fmt_pos(tot['net_pos']), 12)}  "
+                f"{src}"
+            )
+            if tot["base"] is not None:
+                lines.append(
+                    f"{_pad('', 8, '<')} "
+                    + _c("2", "A ")
+                    + _fmt_pnl(tot["pnl_a"])
+                    + _c("2", " / B ")
+                    + _fmt_pnl(tot["pnl_b"])
+                    + _c("2", f"  基线 {_fmt_money(tot['base'])}")
+                )
 
-    lines.append(rule)
-    p_heads = "".join(f" {_pad(p_label(q), 8)}" for q in percentiles)
-    lines.append(
-        f"{_pad('方向', 16, '<')} {_pad('现净%', 9)} {_pad('估$', 8)} "
-        f"{_pad('均', 8)}{p_heads} {_pad('n', 6)}  网格"
-    )
+    if not compact:
+        lines.append(rule)
+        p_heads = "".join(f" {_pad(p_label(q), 8)}" for q in percentiles)
+        lines.append(
+            f"{_pad('方向', 16, '<')} {_pad('现净%', 9)} {_pad('估$', 8)} "
+            f"{_pad('均', 8)}{p_heads} {_pad('n', 6)}  网格"
+        )
 
     legs = []
     tick = grid.last if grid else None
@@ -658,7 +733,7 @@ def _render(
     quotes_ok = not (a_stale or b_stale)
     delta = _order_delta(tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy)
     win_keys = [("ab", a_name, b_name, 1), ("ba", b_name, a_name, -1)]
-    if windows:
+    if windows and not compact:
         for i, (key, buy_name, sell_name, side) in enumerate(win_keys):
             stats = windows[key].stats()
             current = legs[i].pct if len(legs) == 2 else None
@@ -761,21 +836,67 @@ def _render(
 
     persist_on = bool(win_cfg.get("persist", True))
     persist_note = "  已落盘" if persist_on else ""
-    lines.append(rule)
-    lines.append(
-        _c(
-            "2",
-            f"FIFO {max_samples}  启动≥{min_samples}{persist_note}  "
-            f"{a_name} {_fee_tag(a_cfg)} / {b_name} {_fee_tag(b_cfg)}  "
-            f"带宽×{gcfg['fee_mult']:g}  "
-            f"{'真单双腿' if live else '模拟成交'} "
-            f"开{paper.opens if paper else 0}平{paper.closes if paper else 0}  "
-            f"CSV {paper.path.name if paper else '-'}  "
-            f"{'对账对照成交仓' if live else '对账对照启动基线'}  "
-            f"断线/失败只平  合计盈亏=两所净值-启动基线",
+    if show_footer:
+        lines.append(rule)
+        fee_mult = grid.fee_mult if grid is not None else gcfg["fee_mult"]
+        lines.append(
+            _c(
+                "2",
+                f"FIFO {max_samples}  启动≥{min_samples}{persist_note}  "
+                f"{a_name} {_fee_tag(a_cfg)} / {b_name} {_fee_tag(b_cfg)}  "
+                f"带宽×{fee_mult:g}  qty {ledger.qty_per_layer if ledger else '-'}  "
+                f"{'真单双腿' if live else '模拟成交'} "
+                f"开{paper.opens if paper else 0}平{paper.closes if paper else 0}  "
+                f"CSV {paper.path.name if paper else '-'}  "
+                f"{'对账对照成交仓' if live else '对账对照启动基线'}  "
+                f"断线/失败只平",
+            )
         )
-    )
     return "\n".join(lines), tick, quotes_ok
+
+
+def _load_pair_specs(
+    vs_cfg: Dict[str, Any], venues: Dict[str, Dict[str, Any]]
+) -> List[PairSpec]:
+    path = resolve_pairs_path(vs_cfg, CURRENT_DIR)
+    if path is not None:
+        specs = enabled_pairs(load_pairs(path))
+        if not specs:
+            raise SystemExit(f"{path} 没有 enabled=1 的交易对")
+        return specs
+    sa = str(venues["a"].get("symbol") or "").strip()
+    sb = str(venues["b"].get("symbol") or "").strip()
+    if not sa or not sb:
+        raise SystemExit("未配置 vs.pairs_csv，且 venues.a/b 缺少 symbol")
+    gcfg = _grid_cfg(vs_cfg)
+    lcfg = _ledger_cfg(vs_cfg)
+    return [
+        PairSpec(
+            name=sa,
+            symbol_a=sa,
+            symbol_b=sb,
+            qty=lcfg["qty"],
+            max_lots=gcfg["max_lots"],
+            fee_mult=gcfg["fee_mult"],
+        )
+    ]
+
+
+def _pair_store_path(
+    spec: PairSpec,
+    venues: Dict[str, Dict[str, Any]],
+    win_cfg: Dict[str, Any],
+    n_pairs: int,
+) -> tuple[Dict[str, Any], Path]:
+    identity = window_identity(venues)
+    override = win_cfg.get("persist_path")
+    if override and n_pairs > 1:
+        base = persist_path(CURRENT_DIR, identity, override=override)
+        store = base.with_name(f"{base.stem}_{spec.name}{base.suffix}")
+        return identity, store
+    if n_pairs > 1:
+        override = None
+    return identity, persist_path(CURRENT_DIR, identity, override=override)
 
 
 async def _print_loop(
@@ -784,105 +905,125 @@ async def _print_loop(
     book: QuoteBook,
     accounts: AccountBook,
     stop: asyncio.Event,
+    specs: List[PairSpec],
 ) -> None:
     interval = float(vs_cfg.get("print_interval_sec", 0.5))
     win_cfg = vs_cfg.get("window") or {}
     min_samples, maxlen = _window_sizes(win_cfg)
     persist_on = bool(win_cfg.get("persist", True))
     save_interval = float(win_cfg.get("save_interval_sec", 5))
-    identity = window_identity(venues)
-    store_path = persist_path(
-        CURRENT_DIR,
-        identity,
-        override=win_cfg.get("persist_path"),
-    )
-    windows = {
-        "ab": SpreadWindow(
-            maxlen=maxlen,
-            percentile=win_cfg.get("percentile", 90),
-        ),
-        "ba": SpreadWindow(
-            maxlen=maxlen,
-            percentile=win_cfg.get("percentile", 90),
-        ),
-    }
     gcfg = _grid_cfg(vs_cfg)
-    grid = SpreadGrid(
-        fee_a=taker_fee_of(venues["a"]),
-        fee_b=exec_fee_of(venues["b"]),
-        fee_mult=gcfg["fee_mult"],
-        min_samples=min_samples,
-        q_lo=gcfg["q_lo"],
-        q_hi=gcfg["q_hi"],
-        max_lots=gcfg["max_lots"],
-        step=gcfg["step"],
-    )
     lcfg = _ledger_cfg(vs_cfg)
     live = bool(lcfg["live"])
-    ledger = PositionLedger(
-        qty_per_layer=lcfg["qty"],
-        pos_tolerance=lcfg["pos_tolerance"],
-        live=live,
-        max_lots=gcfg["max_lots"],
-    )
-    sim = None if live else SimBroker(
-        fill_delay_sec=lcfg["fill_delay_sec"],
-        leg_gap_sec=lcfg["leg_gap_sec"],
-        rest_lag_sec=lcfg["rest_lag_sec"],
-    )
-    hedge = None
+    multi = len(specs) > 1
+    runtimes: List[PairRuntime] = []
     adapter_a = None
     adapter_b = None
+    b_maker = venue_role(venues["b"]) == "maker"
     if live:
         adapter_a = create_adapter(_adapter_config(venues["a"]))
         adapter_b = create_adapter(_adapter_config(venues["b"]))
         adapter_a.connect()
         adapter_b.connect()
-        b_maker = venue_role(venues["b"]) == "maker"
-        hedge = DualLegBroker(
-            adapter_a,
-            adapter_b,
-            str(venues["a"].get("symbol") or ""),
-            str(venues["b"].get("symbol") or ""),
-            timeout_sec=lcfg["timeout_sec"],
-            poll_sec=0.05,
-            live=True,
-            b_maker=b_maker,
-            pos_lookup=lambda slot: _wss_pos(accounts, slot),
-            pos_apply=lambda slot, qty: accounts.apply_fill(slot, qty),
-            bbo_lookup=lambda: _wss_bbo_b(book),
-        )
+        names = ",".join(s.name for s in specs)
         print(
-            f"真单已开 qty={lcfg['qty']} timeout={lcfg['timeout_sec']:g}s "
+            f"真单已开 对={names} timeout={lcfg['timeout_sec']:g}s "
             f"B {'Maker' if b_maker else '市价'}/A 市价  "
             f"{_fee_tag(venues['a'])} / {_fee_tag(venues['b'])}  "
-            f"WSS 认仓  对账对照成交仓 断线/失败只平"
+            f"所级 WSS/账户各一次  同时只执行一对  断线/失败只平"
         )
-    csv_name = f"{store_path.stem}_{'live' if live else 'paper'}.csv"
-    paper = PaperJournal(store_path.with_name(csv_name))
-    last_save = time.time()
-    last_recon = 0.0
-    last_layer = ""
+    for spec in specs:
+        pv = pair_venues(venues, spec)
+        identity, store_path = _pair_store_path(spec, pv, win_cfg, len(specs))
+        windows = {
+            "ab": SpreadWindow(
+                maxlen=maxlen,
+                percentile=win_cfg.get("percentile", 90),
+            ),
+            "ba": SpreadWindow(
+                maxlen=maxlen,
+                percentile=win_cfg.get("percentile", 90),
+            ),
+        }
+        grid = SpreadGrid(
+            fee_a=taker_fee_of(pv["a"]),
+            fee_b=exec_fee_of(pv["b"]),
+            fee_mult=spec.fee_mult,
+            min_samples=min_samples,
+            q_lo=gcfg["q_lo"],
+            q_hi=gcfg["q_hi"],
+            max_lots=spec.max_lots,
+            step=gcfg["step"],
+        )
+        ledger = PositionLedger(
+            qty_per_layer=spec.qty,
+            pos_tolerance=lcfg["pos_tolerance"],
+            live=live,
+            max_lots=spec.max_lots,
+        )
+        sim = None if live else SimBroker(
+            fill_delay_sec=lcfg["fill_delay_sec"],
+            leg_gap_sec=lcfg["leg_gap_sec"],
+            rest_lag_sec=lcfg["rest_lag_sec"],
+        )
+        ka, kb = spec.book_a(), spec.book_b()
+        hedge = None
+        if live and adapter_a is not None and adapter_b is not None:
+            hedge = DualLegBroker(
+                adapter_a,
+                adapter_b,
+                spec.symbol_a,
+                spec.symbol_b,
+                timeout_sec=lcfg["timeout_sec"],
+                poll_sec=0.05,
+                live=True,
+                b_maker=b_maker,
+                pos_lookup=lambda slot, ka=ka, kb=kb: _wss_pos(
+                    accounts, ka if slot == "a" else kb
+                ),
+                pos_apply=lambda slot, qty, ka=ka: (
+                    accounts.apply_fill(ka, qty) if slot == "a" else None
+                ),
+                bbo_lookup=lambda kb=kb: _wss_bbo(book, kb),
+            )
+        csv_name = f"{store_path.stem}_{'live' if live else 'paper'}.csv"
+        paper = PaperJournal(store_path.with_name(csv_name))
+        rt = PairRuntime(
+            spec=spec,
+            venues=pv,
+            windows=windows,
+            grid=grid,
+            ledger=ledger,
+            sim=sim,
+            hedge=hedge,
+            paper=paper,
+            identity=identity,
+            store_path=store_path,
+        )
+        if persist_on:
+            _, saved_grid, saved_pnl = load_windows(store_path, identity, windows)
+            grid.load(saved_grid)
+            grid.lots = 0
+            rt.combined.load(saved_pnl)
+        rt.last_save = time.time()
+        runtimes.append(rt)
+
     hedge_busy = False
-    last_align = 0.0          # 后台敞口守护上次下单时间
+    last_align_any = 0.0
     align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
     order_task: Optional[asyncio.Task] = None
-    pending_log: Optional[Dict[str, Any]] = None
-    combined = CombinedPnl()
-    if persist_on:
-        _, saved_grid, saved_pnl = load_windows(store_path, identity, windows)
-        grid.load(saved_grid)
-        grid.lots = 0
-        combined.load(saved_pnl)
+    busy_rt: Optional[PairRuntime] = None
     if sys.stdout.isatty():
         sys.stdout.write("\033[?25l")
         sys.stdout.flush()
     try:
         while not stop.is_set():
             now = time.time()
-            if sim is not None:
-                sim.poll(ledger, now=now)
-            if order_task is not None and order_task.done():
+            for rt in runtimes:
+                if rt.sim is not None:
+                    rt.sim.poll(rt.ledger, now=now)
+            if order_task is not None and order_task.done() and busy_rt is not None:
+                rt = busy_rt
                 with contextlib.suppress(Exception):
                     result = order_task.result()
                     note = ""
@@ -894,117 +1035,146 @@ async def _print_loop(
                         jf = getattr(result, "journal_fields", None)
                         if callable(jf):
                             exec_fields = jf()
-                    if pending_log is not None:
-                        extra_note = str(pending_log.pop("note", "") or "")
+                    if rt.pending_log is not None:
+                        extra_note = str(rt.pending_log.pop("note", "") or "")
                         if extra_note and note:
                             note = f"{extra_note} {note}"
                         elif extra_note:
                             note = extra_note
-                        paper.record(
-                            **pending_log,
+                        rt.paper.record(
+                            **rt.pending_log,
                             **exec_fields,
-                            lots_after=ledger.lots,
+                            lots_after=rt.ledger.lots,
                             note=note,
                         )
-                        last_layer = paper.last
+                        rt.last_layer = rt.paper.last
                     elif note:
-                        last_layer = note
+                        rt.last_layer = note
+                rt.pending_log = None
                 order_task = None
-                pending_log = None
+                busy_rt = None
                 hedge_busy = False
             snap = await book.snapshot()
             acct = await accounts.snapshot()
-            if (
-                not hedge_busy
-                and (
-                    (not ledger.accounts_ready)
-                    or now - last_recon >= lcfg["reconcile_interval_sec"]
-                )
-            ):
-                stale_sec = float(vs_cfg.get("account_stale_sec", 15.0))
-                pos_a, ts_a = _acct_pos(acct.get("a"), now, stale_sec)
-                pos_b, ts_b = _acct_pos(acct.get("b"), now, stale_sec)
-                ledger.reconcile(
-                    pos_a,
-                    pos_b,
-                    ts_a,
-                    ts_b,
-                    now=now,
-                    live=live,
-                )
-                if ledger.accounts_ready:
-                    last_recon = now
-                    n = abs(ledger.lots)
-                    if n and grid.peak_n < n:
-                        grid.peak_n = n
+            stale_sec = float(vs_cfg.get("account_stale_sec", 15.0))
+            if not hedge_busy:
+                for rt in runtimes:
+                    ka, kb = rt.spec.book_a(), rt.spec.book_b()
+                    if (not rt.ledger.accounts_ready) or (
+                        now - rt.last_recon >= lcfg["reconcile_interval_sec"]
+                    ):
+                        pos_a, ts_a = _acct_pos(acct.get(ka), now, stale_sec)
+                        pos_b, ts_b = _acct_pos(acct.get(kb), now, stale_sec)
+                        rt.ledger.reconcile(
+                            pos_a,
+                            pos_b,
+                            ts_a,
+                            ts_b,
+                            now=now,
+                            live=live,
+                        )
+                        if rt.ledger.accounts_ready:
+                            rt.last_recon = now
+                            n = abs(rt.ledger.lots)
+                            if n and rt.grid.peak_n < n:
+                                rt.grid.peak_n = n
 
-            # 后台敞口守护：不论对账是否失败，只要 A+B 敞口超过容差就补 A
-            # hedge_busy 时跳过（网格 execute 自己对齐），冷却 align_cooldown_sec
             if (
                 live
-                and hedge is not None
                 and not hedge_busy
-                and not ledger.inflight
-                and ledger.accounts_ready
-                and now - last_align >= align_cooldown
+                and now - last_align_any >= align_cooldown
             ):
-                stale_sec = float(vs_cfg.get("account_stale_sec", 15.0))
-                pos_a_raw, _ = _acct_pos(acct.get("a"), now, stale_sec)
-                pos_b_raw, _ = _acct_pos(acct.get("b"), now, stale_sec)
-                if pos_a_raw is not None and pos_b_raw is not None:
+                for rt in runtimes:
+                    if rt.hedge is None or rt.ledger.inflight or not rt.ledger.accounts_ready:
+                        continue
+                    if now - rt.last_align < align_cooldown:
+                        continue
+                    ka, kb = rt.spec.book_a(), rt.spec.book_b()
+                    pos_a_raw, _ = _acct_pos(acct.get(ka), now, stale_sec)
+                    pos_b_raw, _ = _acct_pos(acct.get(kb), now, stale_sec)
+                    if pos_a_raw is None or pos_b_raw is None:
+                        continue
                     _pa = Decimal(str(pos_a_raw))
                     _pb = Decimal(str(pos_b_raw))
                     _target = -_pb
-                    _tol = max(Decimal(str(ledger.qty_per_layer)) * Decimal("0.05"), Decimal("1e-8"))
-                    if abs(_pa - _target) > _tol:
-                        if hedge.qty_per_layer <= 0:
-                            hedge.qty_per_layer = ledger.qty_per_layer
-                        _ok, _msg, _fields = hedge.align_a_only(_target)
-                        last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
-                        last_align = now
-                        paper.record(
-                            action="敞口补仓",
-                            delta=1 if (_pa - _target) < 0 else -1,
-                            lots_before=ledger.lots,
-                            lots_after=ledger.lots,
-                            qty=ledger.qty_per_layer,
-                            note=_msg,
-                            **_fields,
-                        )
+                    _tol = max(
+                        Decimal(str(rt.ledger.qty_per_layer)) * Decimal("0.05"),
+                        Decimal("1e-8"),
+                    )
+                    if abs(_pa - _target) <= _tol:
+                        continue
+                    if rt.hedge.qty_per_layer <= 0:
+                        rt.hedge.qty_per_layer = rt.ledger.qty_per_layer
+                    _ok, _msg, _fields = rt.hedge.align_a_only(_target)
+                    rt.last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
+                    rt.last_align = now
+                    last_align_any = now
+                    rt.paper.record(
+                        action="敞口补仓",
+                        delta=1 if (_pa - _target) < 0 else -1,
+                        lots_before=rt.ledger.lots,
+                        lots_after=rt.ledger.lots,
+                        qty=rt.ledger.qty_per_layer,
+                        note=_msg,
+                        **_fields,
+                    )
+                    break
 
             _clear_tty()
-            text, tick, quotes_ok = _render(
-                vs_cfg=vs_cfg,
-                venues=venues,
-                quotes=snap,
-                windows=windows,
-                grid=grid,
-                ledger=ledger,
-                accounts=acct,
-                last_layer=last_layer,
-                hedge_busy=hedge_busy,
-                live=live,
-                pnl=combined,
-                paper=paper,
+            header = _c(
+                "2",
+                f"{time.strftime('%H:%M:%S')}  "
+                f"{_short(str(venues['a'].get('exchange')))}/"
+                f"{_short(str(venues['b'].get('exchange')))}  "
+                f"{len(runtimes)}对  "
+                + ("执行中 " + (busy_rt.spec.name if busy_rt else "") if hedge_busy else "空闲")
+                + "  行情/账户每所一条连接",
             )
-            print(text, flush=True)
-            grid.lots = ledger.lots
-            delta = _order_delta(
-                tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy
-            )
-            if delta:
-                qa = snap.get("a")
-                qb = snap.get("b")
+            blocks = [header]
+            chosen: Optional[tuple[PairRuntime, Optional[GridTick], int, Dict[str, Quote]]] = None
+            for i, rt in enumerate(runtimes):
+                text, tick, quotes_ok = _render(
+                    vs_cfg=vs_cfg,
+                    venues=rt.venues,
+                    quotes=snap,
+                    windows=rt.windows,
+                    grid=rt.grid,
+                    ledger=rt.ledger,
+                    accounts=acct,
+                    last_layer=rt.last_layer,
+                    hedge_busy=hedge_busy,
+                    live=live,
+                    pnl=rt.combined if not multi else None,
+                    paper=rt.paper,
+                    key_a=rt.spec.book_a(),
+                    key_b=rt.spec.book_b(),
+                    pair_name=rt.spec.name,
+                    compact=multi,
+                    show_equity=(i == 0),
+                    show_footer=not multi,
+                )
+                blocks.append(text)
+                rt.grid.lots = rt.ledger.lots
+                delta = _order_delta(
+                    tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy
+                )
+                if chosen is None and delta:
+                    chosen = (rt, tick, delta, snap)
+            print("\n".join(blocks), flush=True)
+            if chosen is not None:
+                rt, tick, delta, snap = chosen
+                ka, kb = rt.spec.book_a(), rt.spec.book_b()
+                qa = snap.get(ka)
+                qb = snap.get(kb)
                 px_a = px_b = None
-                b_maker = venue_role(venues["b"]) == "maker"
                 if qa is not None and qb is not None:
                     px_a = float(qa.ask if delta > 0 else qa.bid)
                     if b_maker:
                         px_b = float(qb.ask if delta > 0 else qb.bid)
                     else:
                         px_b = float(qb.bid if delta > 0 else qb.ask)
-                lots_before = ledger.lots
-                if ledger.is_reduce(delta):
+                lots_before = rt.ledger.lots
+                if rt.ledger.is_reduce(delta):
                     action = "减仓"
                 elif lots_before == 0:
                     action = "开仓"
@@ -1017,41 +1187,60 @@ async def _print_loop(
                     action=action,
                     delta=delta,
                     lots_before=lots_before,
-                    qty=ledger.qty_per_layer,
+                    qty=rt.ledger.qty_per_layer,
                     px_a=px_a,
                     px_b=px_b,
                 )
-                if live and hedge is not None:
+                if multi:
+                    extra = str(log_kw.get("note") or "").strip()
+                    log_kw["note"] = f"{rt.spec.name} {extra}".strip()
+                if live and rt.hedge is not None:
                     hedge_busy = True
-                    pending_log = log_kw
-                    reduce_only = ledger.is_reduce(delta)
+                    busy_rt = rt
+                    rt.pending_log = log_kw
+                    reduce_only = rt.ledger.is_reduce(delta)
                     rest_cb = None
-                    if venue_role(venues["b"]) == "maker":
-                        rest_cb = lambda d=delta, n=lots_before: _maker_rest_ok(
-                            book, venues, grid, d, n
+                    if b_maker:
+                        rest_cb = lambda d=delta, n=lots_before, rt=rt: _maker_rest_ok(
+                            book,
+                            rt.venues,
+                            rt.grid,
+                            d,
+                            n,
+                            rt.spec.book_a(),
+                            rt.spec.book_b(),
                         )
                     order_task = asyncio.create_task(
                         asyncio.to_thread(
                             _execute_layer,
-                            hedge,
-                            ledger,
+                            rt.hedge,
+                            rt.ledger,
                             delta,
                             reduce_only,
                             rest_cb,
                         )
                     )
-                elif sim is not None and px_a is not None and px_b is not None:
-                    if sim.submit(ledger, delta, px_a, px_b, now=time.time()):
-                        sim.poll(ledger, now=time.time())
-                        paper.record(**log_kw, lots_after=ledger.lots)
-                        last_layer = paper.last
+                elif rt.sim is not None and px_a is not None and px_b is not None:
+                    if rt.sim.submit(rt.ledger, delta, px_a, px_b, now=time.time()):
+                        rt.sim.poll(rt.ledger, now=time.time())
+                        rt.paper.record(**log_kw, lots_after=rt.ledger.lots)
+                        rt.last_layer = rt.paper.last
             now = time.time()
-            if persist_on and now - last_save >= save_interval:
-                try:
-                    save_windows(store_path, identity, windows, grid=grid, pnl=combined)
-                    last_save = now
-                except OSError:
-                    last_save = now
+            if persist_on:
+                for rt in runtimes:
+                    if now - rt.last_save < save_interval:
+                        continue
+                    try:
+                        save_windows(
+                            rt.store_path,
+                            rt.identity,
+                            rt.windows,
+                            grid=rt.grid,
+                            pnl=rt.combined,
+                        )
+                        rt.last_save = now
+                    except OSError:
+                        rt.last_save = now
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -1069,10 +1258,15 @@ async def _print_loop(
                 with contextlib.suppress(Exception):
                     closer()
         if persist_on:
-            try:
-                save_windows(store_path, identity, windows, grid=grid, pnl=combined)
-            except OSError:
-                pass
+            for rt in runtimes:
+                with contextlib.suppress(OSError):
+                    save_windows(
+                        rt.store_path,
+                        rt.identity,
+                        rt.windows,
+                        grid=rt.grid,
+                        pnl=rt.combined,
+                    )
         if sys.stdout.isatty():
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
@@ -1089,16 +1283,24 @@ async def _amain(config_path: str) -> None:
     account_rest = float(vs_cfg.get("account_rest_sec", 30.0))
     account_stale = float(vs_cfg.get("account_stale_sec", 15.0))
     for slot in ("a", "b"):
-        if not venues[slot].get("exchange") or not venues[slot].get("symbol"):
-            raise SystemExit(f"venues.{slot} 需要 exchange 和 symbol")
+        if not venues[slot].get("exchange"):
+            raise SystemExit(f"venues.{slot} 需要 exchange")
         venues[slot] = _merge_venue_keys(venues[slot])
         venues[slot].setdefault("stale_ms", stale_ms)
         venues[slot].setdefault("rest_interval_sec", rest_interval)
         venues[slot].setdefault("account_rest_sec", account_rest)
         venues[slot].setdefault("account_stale_sec", account_stale)
+    specs = _load_pair_specs(vs_cfg, venues)
+    venues["a"]["symbols"] = symbols_for_slot(specs, "a")
+    venues["b"]["symbols"] = symbols_for_slot(specs, "b")
+    venues["a"]["symbol"] = venues["a"]["symbols"][0]
+    venues["b"]["symbol"] = venues["b"]["symbols"][0]
+    if not venues["a"]["symbols"] or not venues["b"]["symbols"]:
+        raise SystemExit("匹配表没有可订阅品种")
 
     book = QuoteBook()
     accounts = AccountBook()
+    accounts.set_peers(peer_map(specs))
     stop = asyncio.Event()
     tasks = [
         asyncio.create_task(
@@ -1108,7 +1310,7 @@ async def _amain(config_path: str) -> None:
             run_feed("b", venues["b"], book, stop, accounts), name="feed-b"
         ),
         asyncio.create_task(
-            _print_loop(vs_cfg, venues, book, accounts, stop), name="print"
+            _print_loop(vs_cfg, venues, book, accounts, stop, specs), name="print"
         ),
     ]
     try:

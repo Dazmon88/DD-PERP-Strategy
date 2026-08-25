@@ -16,9 +16,11 @@ from accounts import (  # noqa: E402
     AccountSnap,
     from_adapter_balance,
     parse_lighter_positions,
+    parse_lighter_positions_map,
     parse_lighter_user_stats,
     parse_ondo_balance,
     parse_ondo_positions,
+    parse_ondo_positions_map,
     parse_popdex_account,
     parse_popdex_positions,
 )
@@ -111,6 +113,36 @@ class QuoteBook:
         return dict(self._data)
 
 
+def feed_symbols(venue_cfg: Dict[str, Any]) -> list:
+    raw = venue_cfg.get("symbols")
+    if isinstance(raw, (list, tuple)) and raw:
+        return [str(s).strip() for s in raw if str(s).strip()]
+    one = str(venue_cfg.get("symbol") or "").strip()
+    return [one] if one else []
+
+
+def slot_book_key(slot: str, symbol: str) -> str:
+    return f"{slot}:{symbol}"
+
+
+def _norm_sym(text: str) -> str:
+    return "".join(ch for ch in str(text).upper() if ch.isalnum())
+
+
+def _same_symbol(have: str, want: str) -> bool:
+    a, b = _norm_sym(have), _norm_sym(want)
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
+def _pick_wanted_symbol(have: str, wanted: list) -> Optional[str]:
+    for want in wanted:
+        if _same_symbol(have, want):
+            return want
+    return None
+
+
 def taker_fee_of(venue_cfg: Dict[str, Any]) -> float:
     exchange = str(venue_cfg.get("exchange") or "").strip().lower()
     if venue_cfg.get("taker_fee") is not None and venue_cfg.get("taker_fee") != "":
@@ -150,6 +182,7 @@ def _adapter_config(venue_cfg: Dict[str, Any]) -> Dict[str, Any]:
         "rest_interval_sec",
         "account_rest_sec",
         "account_stale_sec",
+        "symbols",
     }
     cfg = {k: v for k, v in venue_cfg.items() if k not in skip}
     cfg["exchange_name"] = str(venue_cfg["exchange"]).strip().lower()
@@ -249,30 +282,44 @@ def _ondo_authed(adapter: Any) -> bool:
 async def _push_account_rest(
     *,
     venue: str,
-    symbol: str,
+    symbols: list,
     adapter: Any,
     accounts: AccountBook,
 ) -> None:
+    """账户 REST：余额一次、持仓一次，再按品种拆到 venue:symbol。"""
+    wanted = [str(s).strip() for s in symbols if str(s).strip()]
+    if not wanted:
+        return
     balance = await asyncio.wait_for(
         asyncio.to_thread(adapter.get_balance),
         timeout=8.0,
     )
     positions = await asyncio.wait_for(
-        asyncio.to_thread(adapter.get_positions, symbol),
+        asyncio.to_thread(adapter.get_positions, None),
         timeout=8.0,
     )
-    parsed = from_adapter_balance(balance, positions, symbol)
+    parsed0 = from_adapter_balance(balance, positions, wanted[0])
+    now = time.time()
     await accounts.patch(
         AccountSnap(
             venue=venue,
-            equity=parsed["equity"],
-            available=parsed["available"],
-            pos_qty=parsed["pos_qty"],
-            pos_symbol=symbol,
+            equity=parsed0["equity"],
+            available=parsed0["available"],
             source="rest",
-            ts=time.time(),
+            ts=now,
         )
     )
+    for symbol in wanted:
+        parsed = from_adapter_balance(balance, positions, symbol)
+        await accounts.patch(
+            AccountSnap(
+                venue=slot_book_key(venue, symbol),
+                pos_qty=parsed["pos_qty"],
+                pos_symbol=symbol,
+                source="rest",
+                ts=now,
+            )
+        )
 
 
 async def _account_rest_loop(
@@ -328,7 +375,7 @@ async def _account_rest_loop(
         try:
             await _push_account_rest(
                 venue=venue,
-                symbol=symbol,
+                symbols=feed_symbols(venue_cfg) or [symbol],
                 adapter=adapter,
                 accounts=accounts,
             )
@@ -353,7 +400,8 @@ async def _run_lighter(
     accounts: Optional[AccountBook] = None,
 ) -> None:
     adapter = create_adapter(_adapter_config(venue_cfg))
-    symbol = str(venue_cfg.get("symbol") or "")
+    symbols = feed_symbols(venue_cfg)
+    symbol = symbols[0] if symbols else str(venue_cfg.get("symbol") or "")
     exchange = str(venue_cfg.get("exchange") or "")
     loop = asyncio.get_running_loop()
     delay = 1.0
@@ -372,17 +420,27 @@ async def _run_lighter(
             )
         )
 
-    def on_order_book_update(_market_id, order_book):
+    def _book_key(sym: str) -> str:
+        return slot_book_key(venue, sym)
+
+    def on_order_book_update(market_id, order_book):
         if stop.is_set():
             return
         payload = order_book if isinstance(order_book, dict) else {}
+        meta = getattr(adapter, "_market_by_id", {}).get(market_id) or {}
+        have = str(meta.get("symbol") or payload.get("symbol") or payload.get("market") or "")
+        matched = _pick_wanted_symbol(have, symbols) if have else None
+        if matched is None and len(symbols) == 1:
+            matched = symbols[0]
+        if matched is None:
+            return
         bid, ask, bid_sz, ask_sz = _bbo_from_book(payload.get("bids"), payload.get("asks"))
         loop.create_task(
             book.update(
                 Quote(
-                    venue=venue,
+                    venue=_book_key(matched),
                     exchange=exchange,
-                    symbol=symbol,
+                    symbol=matched,
                     bid=bid,
                     ask=ask,
                     bid_sz=bid_sz,
@@ -394,26 +452,47 @@ async def _run_lighter(
         )
 
     def on_account_update(_account_id, payload):
-        """account_all：只更新仓位，与 Ondo positions 一致。"""
+        """account_all：一次推送拆到各品种仓位。"""
         if accounts is None or stop.is_set():
             return
-        pos_qty = parse_lighter_positions(payload, symbol)
-        if pos_qty is None:
+        by_sym = parse_lighter_positions_map(payload)
+        now = time.time()
+        if by_sym:
+            for have, qty in by_sym.items():
+                matched = _pick_wanted_symbol(have, symbols)
+                if matched is None:
+                    continue
+                loop.create_task(
+                    accounts.patch(
+                        AccountSnap(
+                            venue=_book_key(matched),
+                            pos_qty=qty,
+                            pos_symbol=matched,
+                            source="wss",
+                            ts=now,
+                        )
+                    )
+                )
             return
-        loop.create_task(
-            accounts.patch(
-                AccountSnap(
-                    venue=venue,
-                    pos_qty=pos_qty,
-                    pos_symbol=symbol,
-                    source="wss",
-                    ts=time.time(),
+        # 空列表：不写成 0，交给粘性仓
+        for matched in symbols:
+            pos_qty = parse_lighter_positions(payload, matched)
+            if pos_qty is None:
+                continue
+            loop.create_task(
+                accounts.patch(
+                    AccountSnap(
+                        venue=_book_key(matched),
+                        pos_qty=pos_qty,
+                        pos_symbol=matched,
+                        source="wss",
+                        ts=now,
+                    )
                 )
             )
-        )
 
     def on_user_stats_update(_account_id, payload):
-        """user_stats：只更新净值/可用，与 Ondo balance 一致。"""
+        """user_stats：只更新净值/可用（账户级一次）。"""
         if accounts is None or stop.is_set():
             return
         parsed = parse_lighter_user_stats(payload)
@@ -425,7 +504,6 @@ async def _run_lighter(
                     venue=venue,
                     equity=parsed["equity"],
                     available=parsed["available"],
-                    pos_symbol=symbol,
                     source="wss",
                     ts=time.time(),
                 )
@@ -448,7 +526,7 @@ async def _run_lighter(
             stop_task: Optional[asyncio.Task] = None
             try:
                 ws_kwargs: Dict[str, Any] = {
-                    "order_book_symbols": [symbol],
+                    "order_book_symbols": list(symbols),
                     "on_order_book_update": on_order_book_update,
                 }
                 if accounts is not None:
@@ -478,15 +556,18 @@ async def _run_lighter(
                     await _stop_ws(ws_client, run_task)
                 raise
             except Exception as exc:
-                await book.update(
-                    Quote(
-                        venue=venue,
-                        exchange=exchange,
-                        symbol=symbol,
-                        error=str(exc),
-                        ts=time.time(),
+                now = time.time()
+                err = str(exc)
+                for matched in symbols or [symbol]:
+                    await book.update(
+                        Quote(
+                            venue=_book_key(matched),
+                            exchange=exchange,
+                            symbol=matched,
+                            error=err,
+                            ts=now,
+                        )
                     )
-                )
                 delay = await _backoff(stop, delay)
             finally:
                 if stop_task is not None and not stop_task.done():
@@ -556,7 +637,11 @@ async def _run_ondo(
     stop: asyncio.Event,
     accounts: Optional[AccountBook] = None,
 ) -> None:
-    symbol = normalize_ondo_symbol(str(venue_cfg.get("symbol") or ""))
+    symbols = [
+        normalize_ondo_symbol(s) for s in (feed_symbols(venue_cfg) or [str(venue_cfg.get("symbol") or "")])
+        if str(s).strip()
+    ]
+    symbol = symbols[0] if symbols else ""
     exchange = str(venue_cfg.get("exchange") or "")
     stale_ms = int(venue_cfg.get("stale_ms", 2000))
     rest_interval = float(venue_cfg.get("rest_interval_sec", 1.0))
@@ -578,6 +663,9 @@ async def _run_ondo(
             )
         )
 
+    def _book_key(sym: str) -> str:
+        return slot_book_key(venue, sym)
+
     async def on_msg(message: Dict[str, Any]) -> None:
         nonlocal last_book_ts
         if stop.is_set():
@@ -594,7 +682,8 @@ async def _run_ondo(
             if not isinstance(row, dict):
                 continue
             market = str(row.get("market") or "")
-            if market and normalize_ondo_symbol(market) != symbol:
+            matched = _pick_wanted_symbol(normalize_ondo_symbol(market), symbols) if market else None
+            if matched is None:
                 continue
             bid, ask, bid_sz, ask_sz = _bbo_from_book(row.get("bids"), row.get("asks"))
             if bid is None and ask is None:
@@ -602,9 +691,9 @@ async def _run_ondo(
                 ask, ask_sz = _level_px_sz(row.get("ask") or row.get("bestAsk"))
             await book.update(
                 Quote(
-                    venue=venue,
+                    venue=_book_key(matched),
                     exchange=exchange,
-                    symbol=symbol,
+                    symbol=matched,
                     bid=bid,
                     ask=ask,
                     bid_sz=bid_sz,
@@ -614,9 +703,9 @@ async def _run_ondo(
                 )
             )
             updated = True
-            break
         if not updated:
-            await book.touch(venue, now, source="wss")
+            for matched in symbols:
+                await book.touch(_book_key(matched), now, source="wss")
 
     async def on_balance(message: Dict[str, Any]) -> None:
         if accounts is None or stop.is_set():
@@ -631,7 +720,6 @@ async def _run_ondo(
                 venue=venue,
                 equity=parsed["equity"],
                 available=parsed["available"],
-                pos_symbol=symbol,
                 source="wss",
                 ts=time.time(),
             )
@@ -642,33 +730,65 @@ async def _run_ondo(
             return
         if str(message.get("type") or "") != "update":
             return
-        pos_qty = parse_ondo_positions(message, symbol)
-        if pos_qty is None:
+        now = time.time()
+        by_mkt = parse_ondo_positions_map(message)
+        if by_mkt:
+            for have, qty in by_mkt.items():
+                matched = _pick_wanted_symbol(normalize_ondo_symbol(have), symbols)
+                if matched is None:
+                    continue
+                await accounts.patch(
+                    AccountSnap(
+                        venue=_book_key(matched),
+                        pos_qty=qty,
+                        pos_symbol=matched,
+                        source="wss",
+                        ts=now,
+                    )
+                )
             return
-        await accounts.patch(
-            AccountSnap(
-                venue=venue,
-                pos_qty=pos_qty,
-                pos_symbol=symbol,
-                source="wss",
-                ts=time.time(),
+        for matched in symbols:
+            pos_qty = parse_ondo_positions(message, matched)
+            if pos_qty is None:
+                continue
+            await accounts.patch(
+                AccountSnap(
+                    venue=_book_key(matched),
+                    pos_qty=pos_qty,
+                    pos_symbol=matched,
+                    source="wss",
+                    ts=now,
+                )
             )
-        )
 
     async def rest_once() -> None:
-        with contextlib.suppress(Exception):
-            await _push_ondo_rest(
-                adapter=adapter,
-                venue=venue,
-                exchange=exchange,
-                symbol=symbol,
-                book=book,
-            )
+        """仅对过期品种拉 REST 盘口，避免每个品种无脑打接口。"""
+        now = time.time()
+        snap = book.latest()
+        for matched in symbols:
+            key = _book_key(matched)
+            quote = snap.get(key)
+            if (
+                quote is not None
+                and quote.bid is not None
+                and quote.ask is not None
+                and quote.ts
+                and (now - quote.ts) * 1000 <= stale_ms
+            ):
+                continue
+            with contextlib.suppress(Exception):
+                await _push_ondo_rest(
+                    adapter=adapter,
+                    venue=key,
+                    exchange=exchange,
+                    symbol=matched,
+                    book=book,
+                )
 
     try:
         while not stop.is_set():
             try:
-                await adapter.subscribe_market("book", symbol, callback=on_msg)
+                await adapter.subscribe_market("book", callback=on_msg, markets=list(symbols))
                 stream = adapter.market_stream
                 if stream is not None:
                     stream.callbacks.setdefault("*", on_msg)

@@ -5,13 +5,14 @@
 # 价差 > 上沿 → 开一侧（买A卖B 或 买B卖A，看 AB/BA 谁大）；再每高出 step 加 1 层。
 # 价差 < 下沿 → 开反向；再每低于 step 加 1 层。带内持有，不因下沿单独平仓。
 # venues.b.role=maker 时 B 挂 Maker、带宽用 maker_fee；taker 则两边吃单、用 taker_fee。
-# 运行时只比 venues.a vs venues.b。
+# 运行时 a vs b；品种列表见 vs.pairs_csv（每所一条 WSS，按品种拆盘口/仓位）。
 # exchange 需已有 feed：rh_lighter / lighter / ondoperp / ondo / popdex
 #
 # 用法（仓库根目录）:
 #   python strategys/strategy_vs/vs_monitor.py
 
 vs:
+  pairs_csv: pairs.csv         # 多对：qty / max_lots / fee_mult 按行；所级 WSS/账户只连一次
   print_interval_sec: 0.5
   stale_ms: 2000
   rest_interval_sec: 1       # WSS 过期后 REST 每秒拉一次盘口，推送恢复后停
