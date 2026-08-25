@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -66,8 +66,51 @@ def _bbo(adapter: Any, symbol: str) -> tuple[Optional[Decimal], Optional[Decimal
     )
 
 
-def _touch(side: str, bid: Optional[Decimal], ask: Optional[Decimal]) -> Optional[Decimal]:
-    return bid if side == "buy" else ask
+def _px_str(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _spread_tick(bid: Decimal, ask: Decimal) -> Decimal:
+    spread = ask - bid
+    if spread > 0:
+        return spread
+    mag = max(abs(bid), abs(ask), Decimal("1"))
+    if mag >= 1000:
+        return Decimal("0.1")
+    if mag >= 100:
+        return Decimal("0.01")
+    return Decimal("0.0001")
+
+
+def _touch(
+    side: str,
+    bid: Optional[Decimal],
+    ask: Optional[Decimal],
+    *,
+    extra_ticks: int = 0,
+) -> Optional[Decimal]:
+    """买挂 bid、卖挂 ask；盘口锁死或 post_only 撞单则再退若干 tick。"""
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        return None
+    tick = _spread_tick(bid, ask)
+    extra = max(0, int(extra_ticks))
+    if side == "buy":
+        px = bid - tick * extra
+        if px >= ask:
+            px = bid - tick * (extra + 1)
+        rounding = ROUND_FLOOR
+    else:
+        px = ask + tick * extra
+        if px <= bid:
+            px = ask + tick * (extra + 1)
+        rounding = ROUND_CEILING
+    if px <= 0:
+        return None
+    stepped = (px / tick).to_integral_value(rounding=rounding) * tick
+    return stepped if stepped > 0 else None
 
 
 def _should_chase(side: str, our_px: Decimal, bid: Decimal, ask: Decimal) -> bool:
@@ -95,8 +138,8 @@ def _place_maker(
             symbol=symbol,
             side=side,
             order_type="limit",
-            quantity=qty,
-            price=price,
+            quantity=_d(_px_str(qty)),
+            price=_d(_px_str(price)),
             time_in_force="gtc",
             reduce_only=False,
             post_only=True,
@@ -108,7 +151,14 @@ def _place_maker(
 
 def _maker_fatal(err: str) -> bool:
     text = (err or "").lower()
+    if "post_only_has_match" in text or "post only" in text:
+        return False
     return "reduce_only" in text or "invalid_tif" in text
+
+
+def _maker_would_take(err: str) -> bool:
+    text = (err or "").lower()
+    return "post_only_has_match" in text or "would match" in text
 
 
 def _place_taker(
@@ -314,11 +364,13 @@ class DualLegBroker:
         our_px: Optional[Decimal] = None
         rejects = 0
         chases = 0
+        passive_ticks = 0
         allow_rest = rest_ok if rest_ok is not None else self._rest_ok
         last_taker = 0.0
         last_align_ts = 0.0          # A 上次下单时间，冷却 hedge_cooldown_sec
         hedge_cooldown_sec = 5.0
         yield_exec = False
+        inband_since = 0.0
 
         try:
             while time.time() < deadline:
@@ -389,10 +441,19 @@ class DualLegBroker:
                         _cancel(self.adapter_b, order_id)
                         order_id = ""
                         our_px = None
-                    else:
+                        yield_exec = True
+                        break
+                    # 未挂单：给盘口抖 1.5s，避免 BTC 刚抢到通道就被 QQQ 立刻挤走
+                    if inband_since <= 0:
+                        inband_since = time.time()
+                        result.logs.append("价差未出带，待挂")
+                    elif time.time() - inband_since >= 1.5:
                         result.logs.append("价差未出带，未挂让出")
-                    yield_exec = True
-                    break
+                        yield_exec = True
+                        break
+                    time.sleep(self.poll_sec)
+                    continue
+                inband_since = 0.0
                 if not self.b_maker:
                     if time.time() - last_taker < 0.4:
                         time.sleep(self.poll_sec)
@@ -429,7 +490,7 @@ class DualLegBroker:
                         result.logs.append("B 盘口空，等待")
                     time.sleep(self.poll_sec)
                     continue
-                touch = _touch(side_b, bid, ask)
+                touch = _touch(side_b, bid, ask, extra_ticks=passive_ticks)
                 if touch is None or touch <= 0:
                     time.sleep(self.poll_sec)
                     continue
@@ -463,7 +524,15 @@ class DualLegBroker:
                         result.error = f"B Maker 拒单不可重挂: {err}"
                         result.logs.append(result.error)
                         break
-                    result.logs.append(f"B Maker 失败 {err or '无单'} 重挂 {rejects}/{self.max_rejects}")
+                    if _maker_would_take(err or ""):
+                        passive_ticks += 1
+                        result.logs.append(
+                            f"B Maker 会吃单，退 {passive_ticks} tick 重挂 {err}"
+                        )
+                    else:
+                        result.logs.append(
+                            f"B Maker 失败 {err or '无单'} 重挂 {rejects}/{self.max_rejects}"
+                        )
                     if rejects >= self.max_rejects:
                         result.error = "B 挂单多次失败"
                         break

@@ -8,3 +8,4 @@ strategys/strategy_common/config.yaml
 strategys/strategy_compara/arbitrage_config.yaml
 strategys/strategy_compara/arbitrage_config_standx.yaml
 strategys/strategy_vs/data/
+strategys/strategy_vs/*.log

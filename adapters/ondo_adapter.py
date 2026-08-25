@@ -353,9 +353,13 @@ class OndoAdapter(BasePerpAdapter):
             result = self.http_client.place_order(
                 market=market,
                 side=side_str,
-                size=str(quantity),
+                size=format(quantity, "f") if isinstance(quantity, Decimal) else str(quantity),
                 order_type=typ,
-                price=str(price) if price is not None else None,
+                price=(
+                    format(price, "f")
+                    if isinstance(price, Decimal)
+                    else (str(price) if price is not None else None)
+                ),
                 client_order_id=cloid,
                 time_in_force=tif_api if typ == "limit" else None,
                 post_only=bool(post_only) if post_only is not None else None,

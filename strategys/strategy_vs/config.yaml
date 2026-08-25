@@ -13,7 +13,7 @@
 
 vs:
   pairs_csv: pairs.csv         # 多对：qty / max_lots / fee_mult 按行；所级 WSS/账户只连一次
-  log_path: data/vs_monitor.log  # 执行/对账诊断；终端刷新看不清时 tail -f
+  log_path: vs_monitor.log     # 写在本目录；终端刷新看不清时 tail -f vs_monitor.log
   print_interval_sec: 0.5
   stale_ms: 2000
   rest_interval_sec: 1       # WSS 过期后 REST 每秒拉一次盘口，推送恢复后停

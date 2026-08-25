@@ -288,27 +288,19 @@ class SpreadGrid:
         return current_lots
 
     def rest_ok(self, delta: int, ab_pct: float, ba_pct: float, current_lots: int) -> bool:
-        """Maker 只在当前这一档仍有效时挂着。"""
+        """Maker 只在网格仍要求同一方向再走一层时挂着。
+
+        必须跟 desired_lots / peek.delta 一致。空仓若按「当前更好的一侧」重算 sign，
+        BTC/ETH 的 AB/BA 会抖，刚抢到通道就判定回带、未挂就让出。
+        """
         if self.lower is None or self.upper is None or int(delta) not in (-1, 1):
             return False
         lots = int(current_lots)
-        n = abs(lots)
         d = int(delta)
-        if lots == 0:
-            edge, sign = self._hold_edge(ab_pct, ba_pct, 0)
-            # 空仓：跟上沿同向开（更好的一侧突破），或按下沿反向开
-            if d == sign:
-                return edge > self.upper
-            if d == -sign:
-                return edge < self.lower
-            return False
+        target = self.desired_lots(ab_pct, ba_pct, lots)
         if d > 0:
-            if lots > 0:
-                return float(ab_pct) > self.upper + n * self.step
-            return float(ba_pct) > self.upper
-        if lots < 0:
-            return float(ba_pct) < self.lower - n * self.step
-        return float(ab_pct) < self.lower
+            return target > lots
+        return target < lots
 
     def peek(self, ab_pct: float, ba_pct: float, current_lots: int) -> GridTick:
         target = self.desired_lots(ab_pct, ba_pct, current_lots)
