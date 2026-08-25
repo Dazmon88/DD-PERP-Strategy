@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -74,6 +75,32 @@ def _txt(value: Any) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+class RunLog:
+    """终端刷新会刷掉诊断；逐步执行写到 .log，香港时间追加。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._fh = open(self.path, "a", encoding="utf-8")
+        self.line(f"==== 启动 文件={self.path} ====")
+
+    def line(self, msg: str, pair: str = "") -> None:
+        tag = f"[{pair}] " if pair else ""
+        with self._lock:
+            self._fh.write(f"{_now_hk()} {tag}{msg}\n")
+            self._fh.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self._fh.write(f"{_now_hk()} ==== 退出 ====\n")
+                self._fh.flush()
+                self._fh.close()
+            except Exception:
+                pass
 
 
 class PaperJournal:

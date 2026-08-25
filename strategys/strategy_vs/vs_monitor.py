@@ -50,7 +50,7 @@ from pairs import (  # noqa: E402
     resolve_pairs_path,
     symbols_for_slot,
 )
-from journal import PaperJournal  # noqa: E402
+from journal import PaperJournal, RunLog  # noqa: E402
 from ledger import PositionLedger, SimBroker  # noqa: E402
 from spread import (  # noqa: E402
     GridTick,
@@ -83,6 +83,8 @@ class PairRuntime:
     last_recon: float = 0.0
     last_align: float = 0.0
     last_save: float = 0.0
+    last_recon_log: float = 0.0
+    last_ready: Optional[bool] = None
     pending_log: Optional[Dict[str, Any]] = None
 
 
@@ -1207,6 +1209,12 @@ async def _print_loop(
     lcfg = _ledger_cfg(vs_cfg)
     live = bool(lcfg["live"])
     multi = len(specs) > 1
+    raw_log = vs_cfg.get("log_path") or "data/vs_monitor.log"
+    log_path = Path(str(raw_log))
+    if not log_path.is_absolute():
+        log_path = CURRENT_DIR / log_path
+    runlog = RunLog(log_path)
+    print(f"诊断日志 {log_path}")
     runtimes: List[PairRuntime] = []
     adapter_a = None
     adapter_b = None
@@ -1222,6 +1230,10 @@ async def _print_loop(
             f"B {'Maker' if b_maker else '市价'}/A 市价  "
             f"{_fee_tag(venues['a'])} / {_fee_tag(venues['b'])}  "
             f"所级 WSS/账户各一次  同时只执行一对  断线/失败只平"
+        )
+        runlog.line(
+            f"真单 对={names} timeout={lcfg['timeout_sec']:g}s "
+            f"B={'Maker' if b_maker else 'taker'} live={live}"
         )
     for spec in specs:
         pv = pair_venues(venues, spec)
@@ -1276,6 +1288,7 @@ async def _print_loop(
                     accounts.apply_fill(ka, qty) if slot == "a" else None
                 ),
                 bbo_lookup=lambda kb=kb: _wss_bbo(book, kb),
+                log=lambda m, name=spec.name: runlog.line(m, pair=name),
             )
         csv_name = f"{store_path.stem}_{'live' if live else 'paper'}.csv"
         paper = PaperJournal(store_path.with_name(csv_name))
@@ -1301,6 +1314,7 @@ async def _print_loop(
 
     hedge_busy = False
     last_align_any = 0.0
+    last_wait_log = 0.0
     align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
     order_task: Optional[asyncio.Task] = None
     busy_rt: Optional[PairRuntime] = None
@@ -1326,7 +1340,10 @@ async def _print_loop(
                         jf = getattr(result, "journal_fields", None)
                         if callable(jf):
                             exec_fields = jf()
-                    if rt.pending_log is not None:
+                    if rt.pending_log is not None and "让出执行" in note:
+                        rt.last_layer = note
+                        runlog.line(f"让出 {note}", pair=rt.spec.name)
+                    elif rt.pending_log is not None:
                         extra_note = str(rt.pending_log.pop("note", "") or "")
                         if extra_note and note:
                             note = f"{extra_note} {note}"
@@ -1339,8 +1356,13 @@ async def _print_loop(
                             note=note,
                         )
                         rt.last_layer = rt.paper.last
+                        runlog.line(
+                            f"结束 ok={bool(getattr(result, 'ok', False))} {note}",
+                            pair=rt.spec.name,
+                        )
                     elif note:
                         rt.last_layer = note
+                        runlog.line(f"结束 {note}", pair=rt.spec.name)
                 rt.pending_log = None
                 order_task = None
                 busy_rt = None
@@ -1370,6 +1392,18 @@ async def _print_loop(
                         n = abs(rt.ledger.lots)
                         if n and rt.grid.peak_n < n:
                             rt.grid.peak_n = n
+                    ready = rt.ledger.accounts_ready
+                    err = str(rt.ledger.last_error or "")
+                    if rt.last_ready is None or rt.last_ready != ready:
+                        runlog.line(
+                            f"对账 {'就绪' if ready else '未就绪'} lots={rt.ledger.lots} {err}",
+                            pair=rt.spec.name,
+                        )
+                        rt.last_ready = ready
+                        rt.last_recon_log = now
+                    elif not ready and now - rt.last_recon_log >= 15:
+                        runlog.line(f"对账仍等待 {err}", pair=rt.spec.name)
+                        rt.last_recon_log = now
 
             if (
                 live
@@ -1399,6 +1433,10 @@ async def _print_loop(
                         rt.hedge.qty_per_layer = rt.ledger.qty_per_layer
                     _ok, _msg, _fields = rt.hedge.align_a_only(_target)
                     rt.last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
+                    runlog.line(
+                        f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}",
+                        pair=rt.spec.name,
+                    )
                     rt.last_align = now
                     last_align_any = now
                     rt.paper.record(
@@ -1429,15 +1467,32 @@ async def _print_loop(
                 )
                 rt.grid.lots = rt.ledger.lots
                 ticks.append((rt, tick, quotes_ok, qa, qb))
-                delta = _order_delta(
-                    tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy
+                want = _order_delta(
+                    tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=False
                 )
-                if not delta:
+                if not want or hedge_busy:
                     continue
-                score = _signal_score(tick, delta)
+                score = _signal_score(tick, want)
                 if chosen is None or score > chosen_score:
-                    chosen = (rt, tick, delta, snap)
+                    chosen = (rt, tick, want, snap)
                     chosen_score = score
+            if (
+                hedge_busy
+                and busy_rt is not None
+                and now - last_wait_log >= 5.0
+            ):
+                waiting: List[str] = []
+                for wrt, wtick, w_ok, _qa, _qb in ticks:
+                    wd = _order_delta(
+                        wtick, wrt.ledger, quotes_ok=w_ok, hedge_busy=False
+                    )
+                    if wd:
+                        waiting.append(f"{wrt.spec.name}{wd:+d}")
+                if waiting:
+                    runlog.line(
+                        f"通道占用={busy_rt.spec.name} 排队={','.join(waiting)}"
+                    )
+                    last_wait_log = now
             if multi:
                 text = _render_multi_board(
                     vs_cfg=vs_cfg,
@@ -1520,6 +1575,11 @@ async def _print_loop(
                             rt.spec.book_a(),
                             rt.spec.book_b(),
                         )
+                    runlog.line(
+                        f"{action} 开始 delta={delta:+d} lots={lots_before} "
+                        f"qty={rt.ledger.qty_per_layer} reduce={reduce_only}",
+                        pair=rt.spec.name,
+                    )
                     order_task = asyncio.create_task(
                         asyncio.to_thread(
                             _execute_layer,
@@ -1535,6 +1595,10 @@ async def _print_loop(
                         rt.sim.poll(rt.ledger, now=time.time())
                         rt.paper.record(**log_kw, lots_after=rt.ledger.lots)
                         rt.last_layer = rt.paper.last
+                        runlog.line(
+                            f"模拟 {action} lots={rt.ledger.lots} {rt.last_layer}",
+                            pair=rt.spec.name,
+                        )
             now = time.time()
             if persist_on:
                 for rt in runtimes:
@@ -1556,6 +1620,7 @@ async def _print_loop(
             except asyncio.TimeoutError:
                 continue
     finally:
+        runlog.close()
         if order_task is not None and not order_task.done():
             order_task.cancel()
             with contextlib.suppress(Exception):

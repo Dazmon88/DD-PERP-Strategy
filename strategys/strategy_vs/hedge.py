@@ -232,6 +232,20 @@ class DualLegBroker:
         self._rest_ok = rest_ok
         self.qty_per_layer: float = 0.0
 
+    def _tap_logs(self, result: LayerResult) -> LayerResult:
+        """result.logs 同步写到 DualLegBroker.log（vs_monitor 落 .log）。"""
+        _append = result.logs.append
+
+        def _append_and_log(msg: str) -> None:
+            _append(msg)
+            try:
+                self._log(str(msg))
+            except Exception:
+                pass
+
+        result.logs.append = _append_and_log  # type: ignore[method-assign]
+        return result
+
     def _pos(self, which: str) -> Decimal:
         if self._pos_lookup is not None:
             got = self._pos_lookup(which)
@@ -275,12 +289,13 @@ class DualLegBroker:
         target_a = before_a + signed_a   # A 最终目标仓位
         snap_a = LegSnap("a", self.symbol_a, side_a, before_a, target_a)
         snap_b = LegSnap("b", self.symbol_b, side_b, before_b, before_b + signed_b)
-        result = LayerResult(ok=False, delta=delta, a=snap_a, b=snap_b)
+        result = self._tap_logs(LayerResult(ok=False, delta=delta, a=snap_a, b=snap_b))
 
         cloids = ledger.submit_layer(delta)
         if cloids[0] is None or cloids[1] is None:
             result.error = ledger.last_error or "锁层失败"
             result.note = result.error
+            result.logs.append(result.error)
             return result
         cloid_a, cloid_b = cloids
         style = "Maker" if self.b_maker else "市价"
@@ -300,10 +315,10 @@ class DualLegBroker:
         rejects = 0
         chases = 0
         allow_rest = rest_ok if rest_ok is not None else self._rest_ok
-        waiting_band = False
         last_taker = 0.0
         last_align_ts = 0.0          # A 上次下单时间，冷却 hedge_cooldown_sec
         hedge_cooldown_sec = 5.0
+        yield_exec = False
 
         try:
             while time.time() < deadline:
@@ -370,17 +385,14 @@ class DualLegBroker:
 
                 if self.b_maker and allow_rest is not None and not allow_rest():
                     if order_id:
-                        result.logs.append(f"价差回带内，撤 {order_id} 等待")
+                        result.logs.append(f"价差回带内，撤 {order_id} 让出")
                         _cancel(self.adapter_b, order_id)
                         order_id = ""
                         our_px = None
-                    elif not waiting_band:
-                        result.logs.append("价差在带内，等待出带再挂")
-                    waiting_band = True
-                    time.sleep(self.poll_sec)
-                    continue
-                waiting_band = False
-
+                    else:
+                        result.logs.append("价差未出带，未挂让出")
+                    yield_exec = True
+                    break
                 if not self.b_maker:
                     if time.time() - last_taker < 0.4:
                         time.sleep(self.poll_sec)
@@ -469,6 +481,14 @@ class DualLegBroker:
         finally:
             if order_id:
                 _cancel(self.adapter_b, order_id)
+
+        if yield_exec:
+            ledger.abort_layer("让出执行")
+            result.ok = False
+            result.error = ""
+            result.note = "让出执行"
+            result.flattened = False
+            return result
 
         # 收尾：B 有增量才再对齐 A（B 没动则不因假 0 去打 Lighter）
         pos_b = self._pos("b")
@@ -627,11 +647,15 @@ class DualLegBroker:
         )
         fields["a_order_log"] = msg
         fields["exec_log"] = msg
+        try:
+            self._log(msg)
+        except Exception:
+            pass
         return True, msg, fields
 
     def _fail_empty(self, delta: int, error: str) -> LayerResult:
         zero = Decimal("0")
-        return LayerResult(
+        result = LayerResult(
             ok=False,
             delta=delta,
             a=LegSnap("a", self.symbol_a, "", zero, zero),
@@ -639,3 +663,6 @@ class DualLegBroker:
             error=error,
             note=error,
         )
+        self._tap_logs(result)
+        result.logs.append(error)
+        return result
