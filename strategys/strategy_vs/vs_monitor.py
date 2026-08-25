@@ -448,10 +448,7 @@ def _settle_layer(rt: PairRuntime, runlog: RunLog) -> None:
                 note=note,
             )
             rt.last_layer = rt.paper.last
-            runlog.line(
-                f"结束 ok={bool(getattr(result, 'ok', False))} {note}",
-                pair=rt.spec.name,
-            )
+            runlog.line(rt.paper.last, pair=rt.spec.name)
         elif note:
             rt.last_layer = note
             runlog.line(f"结束 {note}", pair=rt.spec.name)
@@ -853,8 +850,6 @@ def _render_multi_board(
             hedge_busy=_pair_busy(rt),
         )
         extra = ""
-        if rt.last_layer:
-            extra = "  " + rt.last_layer[:40]
         if not quotes_ok:
             extra += "  行情过期只平"
         lines.append(
@@ -1165,14 +1160,9 @@ def _render(
             lines.append(_c("2", f"     {snap.note}"))
         if snap.last_error:
             lines.append(_c("31", f"     {snap.last_error}"))
-        if last_layer:
-            lines.append(_c("2", f"     最近一层 {last_layer}"))
         if paper is not None:
             kind = "真单" if live else "模拟"
-            lines.append(
-                f"{kind} 开仓 {paper.opens}  平仓 {paper.closes}"
-                + (_c("2", f"  {paper.last}") if paper.last else "")
-            )
+            lines.append(f"{kind} 开仓 {paper.opens}  平仓 {paper.closes}")
 
     persist_on = bool(win_cfg.get("persist", True))
     persist_note = "  已落盘" if persist_on else ""
@@ -1435,11 +1425,6 @@ async def _print_loop(
                     if rt.hedge.qty_per_layer <= 0:
                         rt.hedge.qty_per_layer = rt.ledger.qty_per_layer
                     _ok, _msg, _fields = rt.hedge.align_a_only(_target)
-                    rt.last_layer = f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}"
-                    runlog.line(
-                        f"敞口补仓 {'OK' if _ok else 'ERR'} {_msg}",
-                        pair=rt.spec.name,
-                    )
                     rt.last_align = now
                     last_align_any = now
                     rt.paper.record(
@@ -1451,6 +1436,8 @@ async def _print_loop(
                         note=_msg,
                         **_fields,
                     )
+                    rt.last_layer = rt.paper.last
+                    runlog.line(rt.paper.last, pair=rt.spec.name)
                     break
 
             _clear_tty()
@@ -1573,10 +1560,7 @@ async def _print_loop(
                         rt.sim.poll(rt.ledger, now=time.time())
                         rt.paper.record(**log_kw, lots_after=rt.ledger.lots)
                         rt.last_layer = rt.paper.last
-                        runlog.line(
-                            f"模拟 {action} lots={rt.ledger.lots} {rt.last_layer}",
-                            pair=rt.spec.name,
-                        )
+                        runlog.line(rt.paper.last, pair=rt.spec.name)
             now = time.time()
             if persist_on:
                 for rt in runtimes:
