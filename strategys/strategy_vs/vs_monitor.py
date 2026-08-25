@@ -400,18 +400,39 @@ def _order_delta(
     *,
     quotes_ok: bool,
     hedge_busy: bool,
+    allow_open: bool = True,
 ) -> int:
-    """网格 ±1：行情过期或对账失败只平不开。"""
+    """网格 ±1：行情过期、对账失败、可用不足时只平不开。"""
     if tick is None or hedge_busy:
         return 0
     delta = int(tick.delta)
     if delta not in (-1, 1):
         return 0
-    if not quotes_ok and (ledger is None or not ledger.is_reduce(delta)):
+    reducing = ledger is not None and ledger.is_reduce(delta)
+    if not quotes_ok and not reducing:
         return 0
     if ledger is not None and not ledger.can_submit(delta):
         return 0
+    if not allow_open and not reducing:
+        return 0
     return delta
+
+
+def _margin_block_reason(
+    sa: Optional[AccountSnap],
+    sb: Optional[AccountSnap],
+    min_available: float,
+) -> str:
+    """空字符串表示可以开仓。"""
+    av_a = None if sa is None else sa.available
+    av_b = None if sb is None else sb.available
+    if av_a is None or av_b is None:
+        return "可用未知只平"
+    if av_a < min_available:
+        return f"A可用{av_a:.2f}<{min_available:g}只平"
+    if av_b < min_available:
+        return f"B可用{av_b:.2f}<{min_available:g}只平"
+    return ""
 
 
 def _pair_busy(rt: PairRuntime) -> bool:
@@ -841,23 +862,27 @@ def _pair_action_label(
     lots: int,
     ledger: Optional[PositionLedger] = None,
     hedge_busy: bool = False,
+    allow_open: bool = True,
 ) -> str:
     if not warm:
         return _c("2", f"采样{sample_n}/{min_samples}")
     blocked = False
     if tick is not None and int(getattr(tick, "delta", 0) or 0) in (-1, 1):
+        d = int(tick.delta)
+        reducing = ledger is not None and ledger.is_reduce(d)
         if hedge_busy:
             blocked = True
-        elif ledger is not None and not ledger.can_submit(int(tick.delta)):
+        elif ledger is not None and not ledger.can_submit(d):
             blocked = True
+        elif not allow_open and not reducing:
+            blocked = True
+    blocked_lbl = _c("33", "在途" if hedge_busy else "禁开")
     if tick and tick.action == "开仓":
-        if blocked:
-            return _c("33", "在途" if hedge_busy else "禁开")
-        return _c("1;32", "开仓")
+        return blocked_lbl if blocked else _c("1;32", "开仓")
     if tick and tick.action == "加仓":
-        return _c("33", "在途") if blocked else _c("1;36", "加仓")
+        return blocked_lbl if blocked else _c("1;36", "加仓")
     if tick and tick.action == "反向":
-        return _c("33", "在途") if blocked else _c("1;35", "反向")
+        return blocked_lbl if blocked else _c("1;35", "反向")
     if tick and tick.action == "减仓":
         return _c("33", "减仓")
     if tick and tick.action == "持有":
@@ -888,6 +913,11 @@ def _render_multi_board(
     now = time.strftime("%H:%M:%S")
     running = [rt.spec.name for rt in runtimes if _pair_busy(rt)]
     busy = f"执行 {','.join(running)}" if running else "各对独立"
+    min_avail = float(vs_cfg.get("min_available", 40))
+    margin_reason = _margin_block_reason(sa, sb, min_avail)
+    allow_open = not margin_reason
+    if margin_reason:
+        busy = f"{busy}  {_c('33', margin_reason)}"
     tot: Dict[str, Optional[float]] = {}
     if pnl is not None:
         tot = pnl.snapshot(
@@ -943,7 +973,7 @@ def _render_multi_board(
             book_s = _c("33", "对账等待")
         elif _pair_busy(rt):
             book_s = _c("33", "在途")
-        elif not led.can_open:
+        elif not led.can_open or not allow_open:
             book_s = _c("33", "只平")
         else:
             book_s = _c("2", "正常")
@@ -958,6 +988,7 @@ def _render_multi_board(
             lots=lots,
             ledger=rt.ledger,
             hedge_busy=_pair_busy(rt),
+            allow_open=allow_open,
         )
         extra = ""
         if not quotes_ok:
@@ -1175,7 +1206,13 @@ def _render(
     warm = sample_n >= min_samples
 
     lots = ledger.lots if ledger is not None else (tick.lots if tick else (grid.lots if grid else 0))
-    delta = _order_delta(tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy)
+    min_avail = float(vs_cfg.get("min_available", 40))
+    sa_m = accounts.get("a") if accounts else None
+    sb_m = accounts.get("b") if accounts else None
+    allow_open = not _margin_block_reason(sa_m, sb_m, min_avail)
+    delta = _order_delta(
+        tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy, allow_open=allow_open
+    )
     win_keys = [("ab", a_name, b_name, 1), ("ba", b_name, a_name, -1)]
     if windows and not compact:
         for i, (key, buy_name, sell_name, side) in enumerate(win_keys):
@@ -1198,22 +1235,16 @@ def _render(
             )
 
     lines.append(rule)
-    if not warm:
-        act = _c("2", f"采样 {sample_n}/{min_samples}")
-    elif tick and tick.action == "开仓":
-        act = _c("1;32", "开仓")
-    elif tick and tick.action == "加仓":
-        act = _c("1;36", "加仓")
-    elif tick and tick.action == "反向":
-        act = _c("1;35", "反向")
-    elif tick and tick.action == "减仓":
-        act = _c("33", "减仓")
-    elif tick and tick.action == "持有":
-        act = _c("32", "持有")
-    elif lots == 0:
-        act = _c("2", "观望")
-    else:
-        act = _c("32", "持有")
+    act = _pair_action_label(
+        tick,
+        warm=warm,
+        sample_n=sample_n,
+        min_samples=min_samples,
+        lots=lots,
+        ledger=ledger,
+        hedge_busy=hedge_busy,
+        allow_open=allow_open,
+    )
     hold = "空仓"
     if lots > 0:
         hold = f"买{a_name}/卖{b_name}"
@@ -1250,8 +1281,8 @@ def _render(
             f"纸 {a_name} {snap.pos_a:+.4g} / {b_name} {snap.pos_b:+.4g}  "
             f"{snap.lots:+d}/{max_lots}层"
             + (f"  在途{snap.pending}" if snap.pending else "")
-            + ("" if (snap.can_open and not hedge_busy) else _c("33", "  禁开"))
-            + (_c("33", "  只平") if snap.state == "reconcile_fail" else "")
+            + ("" if (snap.can_open and not hedge_busy and allow_open) else _c("33", "  禁开"))
+            + (_c("33", "  只平") if snap.state == "reconcile_fail" or not allow_open else "")
             + (
                 _c("33", "  超限只平")
                 if ledger is not None and ledger.over_max_lots()
@@ -1457,6 +1488,7 @@ async def _print_loop(
         runtimes.append(rt)
 
     session_pnl = CombinedPnl()
+    last_margin = ""
     last_align_any = 0.0
     align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
     if sys.stdout.isatty():
@@ -1506,6 +1538,17 @@ async def _print_loop(
                     elif not ready and now - rt.last_recon_log >= 15:
                         runlog.line(f"对账仍等待 {err}", pair=rt.spec.name)
                         rt.last_recon_log = now
+
+            min_avail = float(vs_cfg.get("min_available", 40))
+            margin_reason = _margin_block_reason(
+                acct.get("a"), acct.get("b"), min_avail
+            )
+            if margin_reason != last_margin:
+                if margin_reason:
+                    runlog.line(f"风控 {margin_reason}")
+                else:
+                    runlog.line("风控 可用恢复可开仓")
+                last_margin = margin_reason
 
             if live and now - last_align_any >= align_cooldown:
                 for rt in runtimes:
@@ -1571,7 +1614,11 @@ async def _print_loop(
                 if now - rt.last_fail_ts < 3.0:
                     continue
                 want = _order_delta(
-                    tick, rt.ledger, quotes_ok=quotes_ok, hedge_busy=False
+                    tick,
+                    rt.ledger,
+                    quotes_ok=quotes_ok,
+                    hedge_busy=False,
+                    allow_open=not margin_reason,
                 )
                 if want:
                     pending.append((rt, tick, want))
