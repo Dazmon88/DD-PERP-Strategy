@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import re
+import signal
 import sys
 import time
 import unicodedata
@@ -455,6 +456,69 @@ def _settle_layer(rt: PairRuntime, runlog: RunLog) -> None:
     rt.pending_log = None
     rt.last_exec_end = time.time()
     rt.order_task = None
+
+
+async def _stop_executors(
+    runtimes: List[PairRuntime],
+    adapter_a: Any,
+    adapter_b: Any,
+    runlog: RunLog,
+    live: bool,
+) -> None:
+    """停执行线程、撤两所挂单、解开账本在途。"""
+    runlog.line("正在退出：停止执行并撤挂单")
+    for rt in runtimes:
+        if rt.hedge is not None:
+            rt.hedge.request_stop()
+    if live:
+
+        def _wipe() -> None:
+            if adapter_b is not None:
+                try:
+                    adapter_b.cancel_all_orders()
+                    runlog.line("B 所全部挂单已撤")
+                except Exception as exc:
+                    runlog.line(f"B 所全撤失败 {exc}")
+                    for rt in runtimes:
+                        with contextlib.suppress(Exception):
+                            adapter_b.cancel_all_orders(symbol=rt.spec.symbol_b)
+            if adapter_a is None:
+                return
+            get_open = getattr(adapter_a, "get_open_orders", None)
+            cancel_one = getattr(adapter_a, "cancel_order", None)
+            if not callable(get_open) or not callable(cancel_one):
+                return
+            for rt in runtimes:
+                try:
+                    orders = get_open(symbol=rt.spec.symbol_a) or []
+                except Exception as exc:
+                    runlog.line(f"A 所查挂单失败 {rt.spec.symbol_a} {exc}", pair=rt.spec.name)
+                    continue
+                for od in orders:
+                    oid = str(getattr(od, "order_id", "") or "")
+                    if not oid:
+                        continue
+                    with contextlib.suppress(Exception):
+                        cancel_one(order_id=oid, symbol=rt.spec.symbol_a)
+                    runlog.line(f"A 所撤 {rt.spec.symbol_a} {oid}", pair=rt.spec.name)
+
+        await asyncio.to_thread(_wipe)
+    wait = [
+        rt.order_task
+        for rt in runtimes
+        if rt.order_task is not None and not rt.order_task.done()
+    ]
+    if wait:
+        _done, pending = await asyncio.wait(wait, timeout=10.0)
+        if pending:
+            runlog.line(f"仍有 {len(pending)} 个执行任务超时，取消等待")
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+    for rt in runtimes:
+        _settle_layer(rt, runlog)
+        if rt.ledger.inflight:
+            rt.ledger.abort_layer("进程退出")
 
 
 def _execute_layer(
@@ -1494,73 +1558,74 @@ async def _print_loop(
                     observe=False,
                 )
             print(text, flush=True)
-            for rt, tick, delta in pending:
-                ka, kb = rt.spec.book_a(), rt.spec.book_b()
-                qa = snap.get(ka)
-                qb = snap.get(kb)
-                px_a = px_b = None
-                if qa is not None and qb is not None:
-                    px_a = float(qa.ask if delta > 0 else qa.bid)
-                    if b_maker:
-                        px_b = float(qb.ask if delta > 0 else qb.bid)
+            if not stop.is_set():
+                for rt, tick, delta in pending:
+                    ka, kb = rt.spec.book_a(), rt.spec.book_b()
+                    qa = snap.get(ka)
+                    qb = snap.get(kb)
+                    px_a = px_b = None
+                    if qa is not None and qb is not None:
+                        px_a = float(qa.ask if delta > 0 else qa.bid)
+                        if b_maker:
+                            px_b = float(qb.ask if delta > 0 else qb.bid)
+                        else:
+                            px_b = float(qb.bid if delta > 0 else qb.ask)
+                    lots_before = rt.ledger.lots
+                    if rt.ledger.is_reduce(delta):
+                        action = "减仓"
+                    elif lots_before == 0:
+                        action = "开仓"
+                    elif (lots_before > 0 and delta > 0) or (lots_before < 0 and delta < 0):
+                        action = "加仓"
                     else:
-                        px_b = float(qb.bid if delta > 0 else qb.ask)
-                lots_before = rt.ledger.lots
-                if rt.ledger.is_reduce(delta):
-                    action = "减仓"
-                elif lots_before == 0:
-                    action = "开仓"
-                elif (lots_before > 0 and delta > 0) or (lots_before < 0 and delta < 0):
-                    action = "加仓"
-                else:
-                    action = "反向"
-                log_kw = _tick_journal_kwargs(
-                    tick,
-                    action=action,
-                    delta=delta,
-                    lots_before=lots_before,
-                    qty=rt.ledger.qty_per_layer,
-                    px_a=px_a,
-                    px_b=px_b,
-                )
-                if multi:
-                    extra = str(log_kw.get("note") or "").strip()
-                    log_kw["note"] = f"{rt.spec.name} {extra}".strip()
-                if live and rt.hedge is not None:
-                    rt.pending_log = log_kw
-                    reduce_only = rt.ledger.is_reduce(delta)
-                    rest_cb = None
-                    if b_maker:
-                        rest_cb = lambda d=delta, n=lots_before, rt=rt: _maker_rest_ok(
-                            book,
-                            rt.venues,
-                            rt.grid,
-                            d,
-                            n,
-                            rt.spec.book_a(),
-                            rt.spec.book_b(),
-                        )
-                    runlog.line(
-                        f"{action} 开始 delta={delta:+d} lots={lots_before} "
-                        f"qty={rt.ledger.qty_per_layer} reduce={reduce_only}",
-                        pair=rt.spec.name,
+                        action = "反向"
+                    log_kw = _tick_journal_kwargs(
+                        tick,
+                        action=action,
+                        delta=delta,
+                        lots_before=lots_before,
+                        qty=rt.ledger.qty_per_layer,
+                        px_a=px_a,
+                        px_b=px_b,
                     )
-                    rt.order_task = asyncio.create_task(
-                        asyncio.to_thread(
-                            _execute_layer,
-                            rt.hedge,
-                            rt.ledger,
-                            delta,
-                            reduce_only,
-                            rest_cb,
+                    if multi:
+                        extra = str(log_kw.get("note") or "").strip()
+                        log_kw["note"] = f"{rt.spec.name} {extra}".strip()
+                    if live and rt.hedge is not None:
+                        rt.pending_log = log_kw
+                        reduce_only = rt.ledger.is_reduce(delta)
+                        rest_cb = None
+                        if b_maker:
+                            rest_cb = lambda d=delta, n=lots_before, rt=rt: _maker_rest_ok(
+                                book,
+                                rt.venues,
+                                rt.grid,
+                                d,
+                                n,
+                                rt.spec.book_a(),
+                                rt.spec.book_b(),
+                            )
+                        runlog.line(
+                            f"{action} 开始 delta={delta:+d} lots={lots_before} "
+                            f"qty={rt.ledger.qty_per_layer} reduce={reduce_only}",
+                            pair=rt.spec.name,
                         )
-                    )
-                elif rt.sim is not None and px_a is not None and px_b is not None:
-                    if rt.sim.submit(rt.ledger, delta, px_a, px_b, now=time.time()):
-                        rt.sim.poll(rt.ledger, now=time.time())
-                        rt.paper.record(**log_kw, lots_after=rt.ledger.lots)
-                        rt.last_layer = rt.paper.last
-                        runlog.line(rt.paper.last, pair=rt.spec.name)
+                        rt.order_task = asyncio.create_task(
+                            asyncio.to_thread(
+                                _execute_layer,
+                                rt.hedge,
+                                rt.ledger,
+                                delta,
+                                reduce_only,
+                                rest_cb,
+                            )
+                        )
+                    elif rt.sim is not None and px_a is not None and px_b is not None:
+                        if rt.sim.submit(rt.ledger, delta, px_a, px_b, now=time.time()):
+                            rt.sim.poll(rt.ledger, now=time.time())
+                            rt.paper.record(**log_kw, lots_after=rt.ledger.lots)
+                            rt.last_layer = rt.paper.last
+                            runlog.line(rt.paper.last, pair=rt.spec.name)
             now = time.time()
             if persist_on:
                 for rt in runtimes:
@@ -1581,14 +1646,20 @@ async def _print_loop(
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
+    except asyncio.CancelledError:
+        stop.set()
     finally:
-        runlog.close()
-        for rt in runtimes:
-            task = rt.order_task
-            if task is not None and not task.done():
-                task.cancel()
-                with contextlib.suppress(Exception):
-                    await task
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+        with contextlib.suppress(Exception):
+            sys.stderr.write("正在撤单并退出...\n")
+            sys.stderr.flush()
+        try:
+            await _stop_executors(runtimes, adapter_a, adapter_b, runlog, live)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                runlog.line(f"退出清理失败 {exc}")
         for adapter in (adapter_a, adapter_b):
             if adapter is None:
                 continue
@@ -1606,9 +1677,7 @@ async def _print_loop(
                         grid=rt.grid,
                         pnl=rt.combined,
                     )
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
+        runlog.close()
 
 
 async def _amain(config_path: str) -> None:
@@ -1641,32 +1710,49 @@ async def _amain(config_path: str) -> None:
     accounts = AccountBook()
     accounts.set_peers(peer_map(specs))
     stop = asyncio.Event()
-    tasks = [
-        asyncio.create_task(
-            run_feed("a", venues["a"], book, stop, accounts), name="feed-a"
-        ),
-        asyncio.create_task(
-            run_feed("b", venues["b"], book, stop, accounts), name="feed-b"
-        ),
-        asyncio.create_task(
-            _print_loop(vs_cfg, venues, book, accounts, stop, specs), name="print"
-        ),
-    ]
+    loop = asyncio.get_running_loop()
+    sig_hits = {"n": 0}
+    tasks: List[asyncio.Task] = []
+
+    def _request_stop() -> None:
+        sig_hits["n"] += 1
+        stop.set()
+        if sig_hits["n"] >= 2:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
+    tasks.extend(
+        [
+            asyncio.create_task(
+                run_feed("a", venues["a"], book, stop, accounts), name="feed-a"
+            ),
+            asyncio.create_task(
+                run_feed("b", venues["b"], book, stop, accounts), name="feed-b"
+            ),
+            asyncio.create_task(
+                _print_loop(vs_cfg, venues, book, accounts, stop, specs), name="print"
+            ),
+        ]
+    )
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, _request_stop)
     try:
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
         stop.set()
-        raise
     finally:
         stop.set()
         try:
             await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=3.0,
+                timeout=20.0,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError):
             for task in tasks:
-                task.cancel()
+                if not task.done():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
 

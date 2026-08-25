@@ -5,6 +5,7 @@ Maker 只在带外挂；回到带内则撤单等待。best 远离我方则撤了
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -281,6 +282,22 @@ class DualLegBroker:
         self._bbo_lookup = bbo_lookup
         self._rest_ok = rest_ok
         self.qty_per_layer: float = 0.0
+        self._stop = threading.Event()
+        self._working_lock = threading.Lock()
+        self._working_oid = ""
+
+    def request_stop(self) -> None:
+        """Ctrl+C：停循环并撤掉本对正在挂的 B 单。"""
+        self._stop.set()
+        oid = ""
+        with self._working_lock:
+            oid = self._working_oid
+        if oid:
+            _cancel(self.adapter_b, oid)
+
+    def _set_working(self, order_id: str) -> None:
+        with self._working_lock:
+            self._working_oid = str(order_id or "")
 
     def _tap_logs(self, result: LayerResult) -> LayerResult:
         """result.logs 同步写到 DualLegBroker.log（vs_monitor 落 .log）。"""
@@ -374,6 +391,9 @@ class DualLegBroker:
 
         try:
             while time.time() < deadline:
+                if self._stop.is_set():
+                    result.logs.append("进程退出，停止挂单")
+                    break
                 pos_b = self._pos("b")
                 # A 绝对对齐：target_a = -pos_b（两腿反号等量）
                 # 用 -pos_b 而不是固定 target_a，这样 B 部分成交时 A 也跟着变
@@ -392,7 +412,8 @@ class DualLegBroker:
 
                 # A 只在 B 本层有增量后才对冲，避免 WSS 假 0 空转
                 if (
-                    b_moved
+                    (not self._stop.is_set())
+                    and b_moved
                     and not a_aligned
                     and time.time() - last_align_ts >= hedge_cooldown_sec
                 ):
@@ -440,6 +461,7 @@ class DualLegBroker:
                         result.logs.append(f"价差回带内，撤 {order_id} 让出")
                         _cancel(self.adapter_b, order_id)
                         order_id = ""
+                        self._set_working("")
                         our_px = None
                         yield_exec = True
                         break
@@ -502,6 +524,7 @@ class DualLegBroker:
                     result.logs.append(f"追价 撤 {order_id} {our_px} → {touch}")
                     _cancel(self.adapter_b, order_id)
                     order_id = ""
+                    self._set_working("")
                     our_px = None
                     chases += 1
                     continue
@@ -540,6 +563,7 @@ class DualLegBroker:
                     continue
                 rejects = 0
                 order_id = str(getattr(order, "order_id", "") or "")
+                self._set_working(order_id)
                 our_px = touch
                 snap_b.order_id = order_id
                 result.logs.append(
@@ -550,6 +574,15 @@ class DualLegBroker:
         finally:
             if order_id:
                 _cancel(self.adapter_b, order_id)
+            self._set_working("")
+
+        if self._stop.is_set():
+            ledger.abort_layer("进程退出")
+            result.ok = False
+            result.error = ""
+            result.note = "进程退出"
+            result.flattened = False
+            return result
 
         if yield_exec:
             ledger.abort_layer("让出执行")
