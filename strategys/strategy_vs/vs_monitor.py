@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -785,31 +786,85 @@ def _fmt_bp_cell(value: Optional[float], width: int = 7, signed: bool = True) ->
     return _c("2", cell)
 
 
-def _bbo_cell(q: Optional[Quote], stale_ms: int) -> str:
-    """买 / 卖 / 延迟 / 状态，各列定宽。"""
-    w_px, w_age, w_st = 12, 6, 4
+_QW_NAME, _QW_PXPAIR, _QW_AGE = 4, 21, 5
+
+
+def _quote_brief(name: str, q: Optional[Quote], stale_ms: int) -> str:
+    """所名 买/卖 延迟 标记。标记用 ASCII，NO_COLOR 下也能看出好坏。"""
+    head = _pad(name, _QW_NAME, "<")
     if q is None:
-        return (
-            f"{_pad('', w_px)} {_pad('', w_px)} "
-            f"{_age_cell(None, True, w_age)} {_pad(_c('33', '等待'), w_st, '<')}"
-        )
+        body = _pad("-/-", _QW_PXPAIR)
+        return f"{head} {_c('33', body)} {_age_cell(None, True, _QW_AGE)} {_c('33', '!')}"
     stale = _is_stale(q, stale_ms)
     if q.error and (q.bid is None or q.ask is None):
-        err = _c("31", str(q.error)[: w_px * 2 + 1])
-        return f"{_pad(err, w_px * 2 + 1, '<')} {_age_cell(_age_ms(q), True, w_age)} {_pad(_c('31', '断开'), w_st, '<')}"
-    st = _quote_status(q, stale)
-    return (
-        f"{_pad(_px_txt(q.bid), w_px)} {_pad(_px_txt(q.ask), w_px)} "
-        f"{_age_cell(_age_ms(q), stale, w_age)} {_pad(st, w_st, '<')}"
-    )
+        err = _pad(str(q.error)[:_QW_PXPAIR], _QW_PXPAIR, "<")
+        return (
+            f"{head} {_c('31', err)} "
+            f"{_age_cell(_age_ms(q), True, _QW_AGE)} {_c('31', 'x')}"
+        )
+    body = _pad(f"{_px_txt(q.bid)}/{_px_txt(q.ask)}", _QW_PXPAIR)
+    rest = (q.source or "").lower() == "rest"
+    if stale:
+        body, flag = _c("33", body), _c("33", "!")
+    elif rest:
+        body, flag = _c("33", body), _c("33", "r")
+    else:
+        flag = _c("2", ".")
+    return f"{head} {body} {_age_cell(_age_ms(q), stale, _QW_AGE)} {flag}"
 
 
-def _bbo_header(name: str) -> str:
-    w_px, w_age, w_st = 12, 6, 4
-    return (
-        f"{_pad(name + '买', w_px, '<')} {_pad(name + '卖', w_px, '<')} "
-        f"{_pad('延迟', w_age, '<')} {_pad('态', w_st, '<')}"
-    )
+def _lots_cell(lots: int, max_lots: int, width: int) -> str:
+    """多A=买A卖B，多B=买B卖A。方向写清楚，避免只看 +/- 猜。"""
+    n = abs(int(lots))
+    if lots > 0:
+        raw, color = f"多A {n}/{max_lots}", "1;32"
+    elif lots < 0:
+        raw, color = f"多B {n}/{max_lots}", "1;31"
+    else:
+        raw, color = f"无仓 0/{max_lots}", "2"
+    return _c(color, _pad(raw, width, "<"))
+
+
+def _trigger_cell(
+    mag: Optional[float],
+    lower: Optional[float],
+    upper: Optional[float],
+    lots: int,
+    step: float,
+    max_lots: int,
+    width: int,
+) -> str:
+    """距下一次同向加层(+)或反向(-)还差多少 bp。门槛与 desired_lots 一致。"""
+    if mag is None or lower is None or upper is None:
+        return _pad(_c("2", "-"), width, "<")
+    n = abs(int(lots))
+    up_need = (upper + n * step) - mag if n < max_lots else None
+    dn_need = mag - lower
+    if dn_need <= 0 or (up_need is not None and up_need <= 0):
+        return _pad(_c("1;33", "就绪"), width, "<")
+    up_tag, dn_tag = ("加", "反") if n else ("开", "开")
+    cands = [(dn_need, f"{dn_tag}-{dn_need * 1e4:.1f}")]
+    if up_need is not None:
+        cands.append((up_need, f"{up_tag}+{up_need * 1e4:.1f}"))
+    _, text = min(cands, key=lambda item: item[0])
+    return _pad(_c("2", text), width, "<")
+
+
+def _band_zone_bar(
+    mag: Optional[float],
+    lower: Optional[float],
+    upper: Optional[float],
+    width: int,
+) -> str:
+    """带宽条按所处区间着色：上沿之上=加层区，下沿之下=反向区。"""
+    bar = _band_bar(mag, lower, upper, width)
+    if mag is None or lower is None or upper is None:
+        return _c("2", bar)
+    if mag > upper:
+        return _c("32", bar)
+    if mag < lower:
+        return _c("31", bar)
+    return _c("2", bar)
 
 
 def _sync_pair_tick(
@@ -905,7 +960,7 @@ def _render_multi_board(
 ) -> str:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
-    min_samples, _ = _window_sizes(win_cfg)
+    min_samples, max_samples = _window_sizes(win_cfg)
     a_name = _short(str(venues["a"].get("name") or venues["a"].get("exchange")))
     b_name = _short(str(venues["b"].get("name") or venues["b"].get("exchange")))
     sa = accounts.get("a")
@@ -917,7 +972,7 @@ def _render_multi_board(
     margin_reason = _margin_block_reason(sa, sb, min_avail)
     allow_open = not margin_reason
     if margin_reason:
-        busy = f"{busy}  {_c('33', margin_reason)}"
+        busy = f"{busy}  {_c('1;33', '风控 ' + margin_reason)}"
     tot: Dict[str, Optional[float]] = {}
     if pnl is not None:
         tot = pnl.snapshot(
@@ -926,28 +981,42 @@ def _render_multi_board(
             sa.available if sa else None,
             sb.available if sb else None,
         )
-    w_pair, w_qty, w_bp, w_lot, w_act, w_led, w_pos = 5, 8, 7, 6, 10, 8, 15
-    rule = _c("2", "─" * 118)
-    lines = [
+    w_pair, w_lot, w_act, w_led = 6, 8, 11, 8
+    w_bp, w_edge, w_bar, w_trig, w_pos = 7, 6, 16, 8, 19
+    w_qty, w_money = 7, 11
+    sep = _c("2", "│")
+    head = [
         f"{_c('1', a_name)} vs {_c('1', b_name)}   {_c('2', now)}   "
         f"{len(runtimes)}对   {busy}   "
         f"{'真单' if live else '模拟'}   每所一条连接",
-        f"{_pad('所', 6, '<')} {_pad('净值$', 12)} {_pad('可用$', 12)} {_pad('盈亏$', 12)}  账户源",
-        f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), 12)} "
-        f"{_pad(_fmt_money(sa.available if sa else None), 12)} "
-        f"{_pad(_fmt_pnl(tot.get('pnl_a')), 12)}  {_acct_bal_status(sa)}",
-        f"{_pad(b_name, 6, '<')} {_pad(_fmt_money(sb.equity if sb else None), 12)} "
-        f"{_pad(_fmt_money(sb.available if sb else None), 12)} "
-        f"{_pad(_fmt_pnl(tot.get('pnl_b')), 12)}  {_acct_bal_status(sb)}",
-        f"{_pad('合计', 6, '<')} {_pad(_fmt_money(tot.get('equity')), 12)} "
-        f"{_pad(_fmt_money(tot.get('available')), 12)} "
-        f"{_pad(_fmt_pnl(tot.get('pnl')), 12)}  "
+        _c("2", f"{_pad('所', 6, '<')} {_pad('净值$', w_money)} {_pad('可用$', w_money)} "
+                f"{_pad('盈亏$', w_money)}  账户源"),
+        f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), w_money)} "
+        f"{_pad(_fmt_money(sa.available if sa else None), w_money)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl_a')), w_money)}  {_acct_bal_status(sa)}",
+        f"{_pad(b_name, 6, '<')} {_pad(_fmt_money(sb.equity if sb else None), w_money)} "
+        f"{_pad(_fmt_money(sb.available if sb else None), w_money)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl_b')), w_money)}  {_acct_bal_status(sb)}",
+        f"{_pad('合计', 6, '<')} {_pad(_fmt_money(tot.get('equity')), w_money)} "
+        f"{_pad(_fmt_money(tot.get('available')), w_money)} "
+        f"{_pad(_fmt_pnl(tot.get('pnl')), w_money)}  "
         + (_c("33", "等待基线") if tot.get("pnl") is None else _c("2", "相对启动净值")),
-        rule,
-        f"{_pad('对', w_pair, '<')} {_pad('qty', w_qty)} "
-        f"{_bbo_header(a_name)} {_bbo_header(b_name)} "
-        f"{_pad('AB', w_bp)} {_pad('BA', w_bp)} {_pad('层', w_lot)} "
-        f"{_pad('动作', w_act, '<')} {_pad('账本', w_led, '<')} {_pad('仓A/B', w_pos, '<')}",
+    ]
+    body = [
+        _c(
+            "2",
+            f"{_pad('品种', w_pair, '<')} {_pad('持仓', w_lot, '<')} "
+            f"{_pad('动作', w_act, '<')} {_pad('账本', w_led, '<')} ",
+        )
+        + sep
+        + _c(
+            "2",
+            f" {_pad('现bp', w_bp)} {_pad('下沿', w_edge)} "
+            f"{_pad('带宽位置', w_bar, '<')} {_pad('上沿', w_edge)} "
+            f"{_pad('触发', w_trig, '<')} ",
+        )
+        + sep
+        + _c("2", f" {_pad('仓A / 仓B', w_pos, '<')}"),
     ]
     for rt, tick, quotes_ok, qa, qb in ticks:
         sample_n = 0
@@ -979,7 +1048,10 @@ def _render_multi_board(
             book_s = _c("2", "正常")
         pa = _acct_display(accounts, rt.spec.book_a(), "a")
         pb = _acct_display(accounts, rt.spec.book_b(), "b")
-        pos = f"{_fmt_pos(pa.pos_qty if pa else None)}/{_fmt_pos(pb.pos_qty if pb else None)}"
+        pos = (
+            f"{_fmt_pos(pa.pos_qty if pa else None)} / "
+            f"{_fmt_pos(pb.pos_qty if pb else None)}"
+        )
         act = _pair_action_label(
             tick,
             warm=warm,
@@ -990,32 +1062,64 @@ def _render_multi_board(
             hedge_busy=_pair_busy(rt),
             allow_open=allow_open,
         )
-        extra = ""
-        if not quotes_ok:
-            extra += "  行情过期只平"
-        lines.append(
-            f"{_pad(rt.spec.name, w_pair, '<')} {_pad(f'{rt.spec.qty:g}', w_qty)} "
-            f"{_bbo_cell(qa, stale_ms)} {_bbo_cell(qb, stale_ms)} "
-            f"{_fmt_bp_cell(ab, w_bp)} {_fmt_bp_cell(ba, w_bp)} "
-            f"{_pad(f'{lots:+d}/{rt.grid.max_lots}', w_lot)} "
-            f"{_pad(act, w_act, '<')} {_pad(book_s, w_led, '<')} {_pad(pos, w_pos, '<')}"
-        )
         mag = tick.mag if tick else None
         lower = tick.lower if tick else rt.grid.lower
         upper = tick.upper if tick else rt.grid.upper
-        lines.append(
-            _c(
-                "2",
-                f"{_pad('', w_pair)} {_pad('', w_qty)} "
-                f"{_band_bar(mag, lower, upper, 24)}  "
-                f"现{_fmt_bp_cell(mag, 7)} 下{_fmt_bp_cell(lower, 6, signed=False)} "
-                f"上{_fmt_bp_cell(upper, 6, signed=False)} "
-                f"来回{_fmt_bp_cell(tick.cost if tick else rt.grid.cost, 6, signed=False)} "
-                f"×{rt.spec.fee_mult:g}{extra}",
+        body.append(
+            f"{_pad(rt.spec.name, w_pair, '<')} "
+            f"{_lots_cell(lots, rt.grid.max_lots, w_lot)} "
+            f"{_pad(act, w_act, '<')} {_pad(book_s, w_led, '<')} "
+            + sep
+            + f" {_fmt_bp_cell(mag, w_bp)} "
+            f"{_fmt_bp_cell(lower, w_edge, signed=False)} "
+            f"{_band_zone_bar(mag, lower, upper, w_bar)} "
+            f"{_fmt_bp_cell(upper, w_edge, signed=False)} "
+            + _trigger_cell(
+                mag, lower, upper, lots, rt.grid.step, rt.grid.max_lots, w_trig
             )
+            + " "
+            + sep
+            + f" {_pad(pos, w_pos, '<')}"
         )
-    lines.append(rule)
-    return "\n".join(lines)
+        # 样本满了就不再重复报数，把尾巴留给真正异常的提示
+        notes = []
+        if not warm:
+            notes.append(_c("33", f"采样{sample_n}/{min_samples}"))
+        elif sample_n < max_samples:
+            notes.append(_c("2", f"样本{sample_n}/{max_samples}"))
+        if tick is not None and tick.frozen:
+            notes.append(_c("33", "带已冻"))
+        if tick is not None and tick.note:
+            notes.append(_c("2", str(tick.note)))
+        if not quotes_ok:
+            notes.append(_c("33", "行情过期只平"))
+        body.append(
+            _c("2", f"{_pad('', w_pair)} {_pad(f'{rt.spec.qty:g}', w_qty)} ")
+            + sep
+            + f" {_quote_brief(a_name, qa, stale_ms)} "
+            + sep
+            + f" {_quote_brief(b_name, qb, stale_ms)} "
+            + sep
+            + f" AB{_fmt_bp_cell(ab, w_edge)} BA{_fmt_bp_cell(ba, w_edge)}"
+            + ("  " + "  ".join(notes) if notes else "")
+        )
+
+    # 以表头宽度画线，异常行尾部的提示不该把边框撑长
+    table_w = _disp_width(body[0])
+    cols = shutil.get_terminal_size((table_w, 40)).columns
+    rule = _c("2", "─" * max(20, min(table_w, cols)))
+    legend = [
+        _c(
+            "2",
+            "持仓 多A=买A卖B、多B=买B卖A    触发 到下一步还需多少 bp（+需涨 -需跌）    "
+            "行情 .正常 r走REST !过期 x断开",
+        ),
+        _c(
+            "2",
+            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可加层，跌出左端=可反向",
+        ),
+    ]
+    return "\n".join(head + [rule] + body + [rule] + legend)
 
 
 def _acct_display(

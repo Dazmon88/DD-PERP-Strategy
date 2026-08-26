@@ -24,7 +24,8 @@ from accounts import (  # noqa: E402
     parse_ondo_positions_map,
     ondo_positions_complete,
     parse_popdex_account,
-    parse_popdex_positions,
+    parse_popdex_positions_map,
+    popdex_positions_complete,
 )
 
 DEFAULT_TAKER_FEE = {
@@ -1021,13 +1022,22 @@ async def _run_popdex(
     stop: asyncio.Event,
     accounts: Optional[AccountBook] = None,
 ) -> None:
-    symbol = normalize_popdex_symbol(str(venue_cfg.get("symbol") or ""))
+    symbols = [
+        s
+        for s in (
+            str(x).strip()
+            for x in (feed_symbols(venue_cfg) or [str(venue_cfg.get("symbol") or "")])
+        )
+        if s
+    ]
+    symbol = symbols[0] if symbols else ""
+    # book key 用配置里的原名，订阅和消息匹配用交易所线上名
+    wire = {raw: normalize_popdex_symbol(raw) for raw in symbols}
     exchange = str(venue_cfg.get("exchange") or "")
     stale_ms = int(venue_cfg.get("stale_ms", 2000))
     rest_interval = float(venue_cfg.get("rest_interval_sec", 1.0))
     delay = 1.0
     adapter = create_adapter(_adapter_config(venue_cfg))
-    last_book_ts = 0.0
     has_auth = _popdex_authed(adapter)
     rest_task: Optional[asyncio.Task] = None
     if accounts is not None:
@@ -1043,8 +1053,19 @@ async def _run_popdex(
             )
         )
 
+    def _book_key(sym: str) -> str:
+        return slot_book_key(venue, sym)
+
+    def _match(have: str) -> Optional[str]:
+        got = normalize_popdex_symbol(have)
+        if not got:
+            return None
+        for raw, on_wire in wire.items():
+            if _same_symbol(got, on_wire):
+                return raw
+        return None
+
     async def on_book(message: Dict[str, Any]) -> None:
-        nonlocal last_book_ts
         if stop.is_set():
             return
         arg = message.get("arg") if isinstance(message.get("arg"), dict) else {}
@@ -1054,12 +1075,13 @@ async def _run_popdex(
         now = time.time()
         data = message.get("data")
         rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+        arg_sym = str(arg.get("symbol") or "")
         updated = False
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            market = str(row.get("symbol") or arg.get("symbol") or "")
-            if market and normalize_popdex_symbol(market) != symbol:
+            matched = _match(str(row.get("symbol") or arg_sym or ""))
+            if matched is None:
                 continue
             bid, ask, bid_sz, ask_sz = _bbo_from_book(
                 row.get("b") or row.get("bids"),
@@ -1071,11 +1093,15 @@ async def _run_popdex(
             if ask is None:
                 ask = _to_float(row.get("ask1Price") or row.get("ask"))
                 ask_sz = _to_float(row.get("ask1Size")) if ask_sz is None else ask_sz
+            updated = True
+            if bid is None and ask is None:
+                await book.touch(_book_key(matched), now, source="wss")
+                continue
             await book.update(
                 Quote(
-                    venue=venue,
+                    venue=_book_key(matched),
                     exchange=exchange,
-                    symbol=symbol,
+                    symbol=matched,
                     bid=bid,
                     ask=ask,
                     bid_sz=bid_sz,
@@ -1084,12 +1110,10 @@ async def _run_popdex(
                     source="wss",
                 )
             )
-            last_book_ts = now
-            updated = True
-            break
-        if not updated and last_book_ts > 0:
-            last_book_ts = now
-            await book.touch(venue, now, source="wss")
+        if not updated and arg_sym:
+            matched = _match(arg_sym)
+            if matched is not None:
+                await book.touch(_book_key(matched), now, source="wss")
 
     async def on_account(message: Dict[str, Any]) -> None:
         if accounts is None or stop.is_set():
@@ -1105,7 +1129,6 @@ async def _run_popdex(
                 venue=venue,
                 equity=parsed["equity"],
                 available=parsed["available"],
-                pos_symbol=symbol,
                 source="wss",
                 ts=time.time(),
             )
@@ -1117,33 +1140,67 @@ async def _run_popdex(
         action = str(message.get("action") or "").lower()
         if action and action not in ("snapshot", "update"):
             return
-        pos_qty = parse_popdex_positions(message, symbol)
-        if pos_qty is None:
-            return
-        await accounts.patch(
-            AccountSnap(
-                venue=venue,
-                pos_qty=pos_qty,
-                pos_symbol=symbol,
-                source="wss",
-                ts=time.time(),
+        now = time.time()
+        by_sym = parse_popdex_positions_map(message)
+        seen = set()
+        for have, qty in by_sym.items():
+            matched = _match(have)
+            if matched is None:
+                continue
+            seen.add(matched)
+            await accounts.patch(
+                AccountSnap(
+                    venue=_book_key(matched),
+                    pos_qty=qty,
+                    pos_symbol=matched,
+                    source="wss",
+                    ts=now,
+                )
             )
-        )
+        if not popdex_positions_complete(message):
+            return
+        for matched in symbols:
+            if matched in seen:
+                continue
+            await accounts.patch(
+                AccountSnap(
+                    venue=_book_key(matched),
+                    pos_qty=0.0,
+                    pos_symbol=matched,
+                    source="wss",
+                    ts=now,
+                )
+            )
 
     async def rest_once() -> None:
-        with contextlib.suppress(Exception):
-            await _push_ondo_rest(
-                adapter=adapter,
-                venue=venue,
-                exchange=exchange,
-                symbol=symbol,
-                book=book,
-            )
+        """只对过期品种拉 REST 盘口。"""
+        now = time.time()
+        snap = book.latest()
+        for matched in symbols:
+            key = _book_key(matched)
+            quote = snap.get(key)
+            if (
+                quote is not None
+                and quote.bid is not None
+                and quote.ask is not None
+                and quote.ts
+                and (now - quote.ts) * 1000 <= stale_ms
+            ):
+                continue
+            with contextlib.suppress(Exception):
+                await _push_ondo_rest(
+                    adapter=adapter,
+                    venue=key,
+                    exchange=exchange,
+                    symbol=matched,
+                    book=book,
+                )
 
     try:
         while not stop.is_set():
             try:
-                await adapter.subscribe_market("book", symbol, callback=on_book)
+                for raw in symbols:
+                    await adapter.subscribe_market("book", wire[raw], callback=on_book)
                 stream = adapter.market_stream
                 if accounts is not None and has_auth:
                     try:
@@ -1164,8 +1221,7 @@ async def _run_popdex(
                     if stream is None or not stream.connected:
                         raise RuntimeError("PopDEX WSS 已断开")
                     now = time.time()
-                    ws_fresh = last_book_ts > 0 and (now - last_book_ts) * 1000 <= stale_ms
-                    if not ws_fresh and now - last_rest >= rest_interval:
+                    if now - last_rest >= rest_interval:
                         last_rest = now
                         await rest_once()
                     try:
@@ -1175,15 +1231,16 @@ async def _run_popdex(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                await book.update(
-                    Quote(
-                        venue=venue,
-                        exchange=exchange,
-                        symbol=symbol,
-                        error=str(exc),
-                        ts=time.time(),
+                for matched in symbols:
+                    await book.update(
+                        Quote(
+                            venue=_book_key(matched),
+                            exchange=exchange,
+                            symbol=matched,
+                            error=str(exc),
+                            ts=time.time(),
+                        )
                     )
-                )
                 last_rest = 0.0
                 backoff_until = time.time() + delay
                 while not stop.is_set() and time.time() < backoff_until:

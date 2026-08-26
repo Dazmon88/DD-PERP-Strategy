@@ -267,24 +267,16 @@ class SpreadGrid:
                 return sign * add_up
             add_lo = min(self.max_lots, self._crossed(edge, self.lower, above=False))
             return -sign * add_lo if add_lo > 0 else 0
+        # edge 取持仓方向那条腿，与 mags=max(ab,ba) 标定的上下沿同尺，
+        # 所以多空共用一套判断：越上沿=同向加层，跌破下沿=开反向。
         hold = 1 if current_lots > 0 else -1
         edge, _ = self._hold_edge(ab_pct, ba_pct, current_lots)
         add_up = min(self.max_lots, self._crossed(edge, self.upper, above=True))
         add_lo = min(self.max_lots, self._crossed(edge, self.lower, above=False))
-        if hold > 0:
-            if add_up > n:
-                return add_up
-            if add_lo > 0:
-                return -add_lo
-            if edge + 1e-18 >= self.lower:
-                return current_lots
-            return current_lots
-        if add_lo > n:
-            return -add_lo
-        if add_up > 0:
-            return add_up
-        if edge - 1e-18 <= self.upper:
-            return current_lots
+        if add_up > n:
+            return hold * add_up
+        if add_lo > 0:
+            return -hold * add_lo
         return current_lots
 
     def rest_ok(self, delta: int, ab_pct: float, ba_pct: float, current_lots: int) -> bool:

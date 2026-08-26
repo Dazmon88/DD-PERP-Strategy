@@ -176,6 +176,8 @@ class PopDEXAdapter(BasePerpAdapter):
         self.market_stream: Optional[PopDEXMarketStream] = None
         self._connected = False
         self._symbol_id_cache: Dict[str, int] = {}
+        self._symbol_cfg_cache: Dict[str, Dict[str, Any]] = {}
+        self._market_filters: Dict[str, Dict[str, Decimal]] = {}
 
     def _require_wallet(self) -> str:
         if not self.wallet_id:
@@ -187,19 +189,51 @@ class PopDEXAdapter(BasePerpAdapter):
             raise Exception("写操作需要配置 agent_key（已授权的 Trade Agent 私钥）")
         return self.agent_key
 
+    def _symbol_config(self, symbol_name: str) -> Dict[str, Any]:
+        """GET /config/symbol 的 data，按品种缓存（含 tickSize/lotSize/minQty）。"""
+        cached = self._symbol_cfg_cache.get(symbol_name)
+        if cached is not None:
+            return cached
+        raw = self.http_client.get_symbol(category=self.category, symbol=symbol_name)
+        data = _unwrap_data(raw)
+        if not isinstance(data, dict):
+            raise ValueError(f"币对配置返回异常: {symbol_name}")
+        self._symbol_cfg_cache[symbol_name] = data
+        return data
+
     def _resolve_symbol_id(self, symbol: str) -> tuple[int, str]:
         symbol_name = normalize_popdex_symbol(symbol)
         if str(symbol).isdigit():
             return int(symbol), symbol_name or str(symbol)
         if symbol_name in self._symbol_id_cache:
             return self._symbol_id_cache[symbol_name], symbol_name
-        raw = self.http_client.get_symbol(category=self.category, symbol=symbol_name)
-        data = raw.get("data") if isinstance(raw, dict) and "data" in raw else raw
-        if not isinstance(data, dict) or data.get("symbolId") is None:
+        data = self._symbol_config(symbol_name)
+        if data.get("symbolId") is None:
             raise ValueError(f"无法解析 symbolId: {symbol}")
         symbol_id = int(data["symbolId"])
         self._symbol_id_cache[symbol_name] = symbol_id
         return symbol_id, symbol_name
+
+    def get_market_filters(self, symbol: str) -> Dict[str, Decimal]:
+        """数量/价格步进和最小数量：lotSize / tickSize / minQty。"""
+        market = normalize_popdex_symbol(symbol)
+        cached = self._market_filters.get(market)
+        if cached is not None:
+            return cached
+        out = {
+            "base_inc": Decimal("0"),
+            "quote_inc": Decimal("0"),
+            "min_size": Decimal("0"),
+        }
+        try:
+            data = self._symbol_config(market)
+            out["base_inc"] = _to_decimal(data.get("lotSize"))
+            out["quote_inc"] = _to_decimal(data.get("tickSize"))
+            out["min_size"] = _to_decimal(data.get("minQty")) or out["base_inc"]
+        except Exception:
+            pass
+        self._market_filters[market] = out
+        return out
 
     def connect(self) -> bool:
         """连接校验：公共时间接口；可选查询 Agent。"""

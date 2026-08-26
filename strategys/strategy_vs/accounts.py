@@ -528,21 +528,6 @@ def ondo_positions_complete(message: Any) -> bool:
     return isinstance(data, list) and len(data) != 1
 
 
-def _popdex_symbol_match(have: str, want: str) -> bool:
-    if _symbol_match(have, want):
-        return True
-
-    def _base(text: str) -> str:
-        token = "".join(ch for ch in text.upper() if ch.isalnum())
-        for suffix in ("USDT", "USDC", "USD"):
-            if token.endswith(suffix) and len(token) > len(suffix):
-                return token[: -len(suffix)]
-        return token
-
-    left, right = _base(have), _base(want)
-    return bool(left) and left == right
-
-
 def parse_popdex_account(message: Any) -> Dict[str, Optional[float]]:
     data = message.get("data") if isinstance(message, dict) else message
     if isinstance(data, list) and data:
@@ -555,32 +540,33 @@ def parse_popdex_account(message: Any) -> Dict[str, Optional[float]]:
     }
 
 
-def parse_popdex_positions(message: Any, symbol: str) -> Optional[float]:
-    action = str(message.get("action") or "").lower() if isinstance(message, dict) else ""
+def parse_popdex_positions_map(message: Any) -> Dict[str, float]:
+    """一条 position 推送拆成 {symbol: 仓位}。"""
     data = message.get("data") if isinstance(message, dict) else message
-    is_list = isinstance(data, list)
-    rows = data if is_list else [data] if isinstance(data, dict) else []
-    qty = 0.0
-    found = False
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    out: Dict[str, float] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        market = str(row.get("symbol") or row.get("market") or "")
-        if market and not _popdex_symbol_match(market, symbol):
+        market = str(row.get("symbol") or row.get("market") or "").strip()
+        if not market:
             continue
         size = _to_float(row.get("holdQty") or row.get("quantity") or row.get("size"))
         if size is None:
             continue
         direction = str(row.get("positionSide") or row.get("side") or "").lower()
-        found = True
-        if abs(size) < 1e-18:
-            continue
-        qty += -abs(size) if direction in ("short", "sell") else abs(size)
-    if found:
-        return qty
-    if action == "update":
-        return None
-    return 0.0 if is_list or action == "snapshot" else None
+        signed = -abs(size) if direction in ("short", "sell") else abs(size)
+        out[market] = 0.0 if abs(signed) < 1e-18 else float(signed)
+    return out
+
+
+def popdex_positions_complete(message: Any) -> bool:
+    """snapshot 且 data 是列表才算全量，缺的品种按空仓补 0。"""
+    if not isinstance(message, dict):
+        return False
+    if not isinstance(message.get("data"), list):
+        return False
+    return str(message.get("action") or "").lower() == "snapshot"
 
 
 def from_adapter_balance(balance: Any, positions: Any, symbol: str) -> Dict[str, Any]:
