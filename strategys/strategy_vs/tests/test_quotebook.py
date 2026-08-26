@@ -133,6 +133,29 @@ def test_snapshot_still_isolated():
     assert old == 100.0 and new == 999.0
 
 
+def test_error_update_keeps_last_bbo():
+    """断线错误包不带盘口时，必须留下上次买一卖一，否则只平路径会 float(None)。"""
+    async def main():
+        book = QuoteBook()
+        await book.update(q(bid=100.0, ask=100.1))
+        await book.update(
+            Quote(
+                venue="a:BTC",
+                exchange="x",
+                symbol="BTC",
+                error="no close frame received",
+                ts=time.time(),
+                source="wss",
+            )
+        )
+        got = (await book.snapshot())["a:BTC"]
+        return got.bid, got.ask, got.error
+
+    bid, ask, err = run(main())
+    assert bid == 100.0 and ask == 100.1
+    assert "close frame" in err
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

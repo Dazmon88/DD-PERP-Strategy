@@ -560,6 +560,38 @@ def parse_popdex_positions_map(message: Any) -> Dict[str, float]:
     return out
 
 
+def parse_hype_fill_coins(message: Any) -> list:
+    """userFills 里出现过的 coin。用来决定要不要立刻 REST 刷新仓位。"""
+    data = message.get("data") if isinstance(message, dict) else message
+    fills: list = []
+    if isinstance(data, dict):
+        raw = data.get("fills")
+        if isinstance(raw, list):
+            fills = raw
+        elif isinstance(data.get("fill"), dict):
+            fills = [data["fill"]]
+    elif isinstance(data, list):
+        fills = data
+    out: list = []
+    seen = set()
+    for row in fills:
+        if not isinstance(row, dict):
+            continue
+        coin = str(row.get("coin") or row.get("symbol") or "").strip()
+        if not coin or coin in seen:
+            continue
+        seen.add(coin)
+        out.append(coin)
+    return out
+
+
+def hype_fills_snapshot(message: Any) -> bool:
+    data = message.get("data") if isinstance(message, dict) else message
+    if not isinstance(data, dict):
+        return False
+    return bool(data.get("isSnapshot") or data.get("is_snapshot"))
+
+
 def popdex_positions_complete(message: Any) -> bool:
     """snapshot 且 data 是列表才算全量，缺的品种按空仓补 0。"""
     if not isinstance(message, dict):

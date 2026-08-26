@@ -1,0 +1,53 @@
+# RH Lighter vs Hyperliquid（HIP-3 io dex）
+# 密钥：.generated/rh_lighter.json 与 .generated/hype.json
+#
+# A=RH 吃单（taker 0），B=Hype 挂 Maker（ALO）。品种见 pairs_hype.csv。
+#
+# 用法（仓库根目录）:
+#   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_hype.yaml
+
+vs:
+  pairs_csv: pairs_hype.csv
+  log_path: vs_hype.log
+  min_available: 40
+  print_interval_sec: 0.5
+  band_refresh_sec: 0.5
+  stale_ms: 2000
+  rest_interval_sec: 1
+  account_rest_sec: 10       # Hype 没有仓位 WSS，REST 比跨所那套更勤；成交会立刻再拉一次
+  account_stale_sec: 15
+  grid:
+    fee_mult: 1.2
+    q_lo: 10
+    q_hi: 90
+    max_lots: 2
+    step: 0.0001
+  ledger:
+    qty: 0.01
+    fill_delay_sec: 0
+    leg_gap_sec: 0
+    live: false              # 确认盘口/对账正常后再改 true
+    timeout_sec: 60
+    pos_tolerance: 0.0000001
+    reconcile_interval_sec: 2
+  window:
+    min_samples: 500
+    max_samples: 30000
+    percentile: [10, 20, 80, 90]
+    persist: true
+    save_interval_sec: 5
+
+venues:
+  a:
+    exchange: rh_lighter
+    symbol: ANTHROPIC        # 占位；实际品种由 pairs_hype.csv 的 symbol_a 决定
+    taker_fee: 0             # Lighter / RH Lighter taker 为 0
+    network: robinhood
+  b:
+    exchange: hype
+    symbol: io:ANTH          # 占位；实际品种由 pairs_hype.csv 的 symbol_b 决定
+    role: maker
+    maker_fee: 0.0002
+    taker_fee: 0.00045
+    network: mainnet
+    perp_dexs: ["io"]

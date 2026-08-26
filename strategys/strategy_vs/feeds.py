@@ -8,6 +8,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional
 
 from adapters.factory import create_adapter
+from adapters.hype_adapter import hype_dex_of, normalize_hype_symbol
+from adapters.hype_stream import bbo_from_l2
 from adapters.ondo_adapter import normalize_ondo_symbol
 from adapters.popdex_adapter import normalize_popdex_symbol
 
@@ -26,6 +28,8 @@ from accounts import (  # noqa: E402
     parse_popdex_account,
     parse_popdex_positions_map,
     popdex_positions_complete,
+    parse_hype_fill_coins,
+    hype_fills_snapshot,
 )
 
 DEFAULT_TAKER_FEE = {
@@ -38,6 +42,8 @@ DEFAULT_TAKER_FEE = {
     "ondoperp": 0.00025,
     "ondoperps": 0.00025,
     "popdex": 0.0005,
+    "hype": 0.00045,
+    "hyperliquid": 0.00045,
 }
 
 DEFAULT_MAKER_FEE = {
@@ -50,6 +56,8 @@ DEFAULT_MAKER_FEE = {
     "ondoperp": 0.0001,
     "ondoperps": 0.0001,
     "popdex": 0.0002,
+    "hype": 0.00015,
+    "hyperliquid": 0.00015,
 }
 
 ACCOUNT_REST_SEC = 30.0
@@ -64,6 +72,7 @@ LIGHTER_EXCHANGES = {
 }
 ONDO_EXCHANGES = {"ondo", "ondoperp", "ondoperps"}
 POPDEX_EXCHANGES = {"popdex"}
+HYPE_EXCHANGES = {"hype", "hyperliquid"}
 
 
 @dataclass
@@ -90,7 +99,9 @@ class QuoteBook:
     async def update(self, quote: Quote) -> None:
         async with self._lock:
             prev = self._data.get(quote.venue)
-            if prev is not None and not quote.error:
+            if prev is not None:
+                # 断线错误包经常不带盘口；把上次买一卖一留下，否则只平逻辑
+                # 会拿到 None 直接崩，界面也只剩一句异常文本。
                 if quote.bid is None:
                     quote.bid = prev.bid
                     if quote.bid_sz is None:
@@ -329,9 +340,12 @@ async def run_feed(
     if exchange in POPDEX_EXCHANGES:
         await _run_popdex(venue, venue_cfg, book, stop, accounts)
         return
+    if exchange in HYPE_EXCHANGES:
+        await _run_hype(venue, venue_cfg, book, stop, accounts)
+        return
     raise ValueError(
         f"尚未实现 {exchange} 的 WSS feed。当前支持: "
-        + ", ".join(sorted(LIGHTER_EXCHANGES | ONDO_EXCHANGES | POPDEX_EXCHANGES))
+        + ", ".join(sorted(LIGHTER_EXCHANGES | ONDO_EXCHANGES | POPDEX_EXCHANGES | HYPE_EXCHANGES))
     )
 
 
@@ -1239,6 +1253,213 @@ async def _run_popdex(
                 while not stop.is_set():
                     if stream is None or not stream.connected:
                         raise RuntimeError("PopDEX WSS 已断开")
+                    now = time.time()
+                    if now - last_rest >= rest_interval:
+                        last_rest = now
+                        await rest_once()
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=0.2)
+                    except asyncio.TimeoutError:
+                        continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                for matched in symbols:
+                    await book.update(
+                        Quote(
+                            venue=_book_key(matched),
+                            exchange=exchange,
+                            symbol=matched,
+                            error=str(exc),
+                            ts=time.time(),
+                        )
+                    )
+                last_rest = 0.0
+                backoff_until = time.time() + delay
+                while not stop.is_set() and time.time() < backoff_until:
+                    now = time.time()
+                    if now - last_rest >= rest_interval:
+                        last_rest = now
+                        await rest_once()
+                    remain = max(0.05, min(rest_interval, backoff_until - time.time()))
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=remain)
+                    except asyncio.TimeoutError:
+                        continue
+                delay = min(delay * 2.0, 15.0)
+            finally:
+                stream = getattr(adapter, "market_stream", None)
+                if stream is not None:
+                    with contextlib.suppress(Exception):
+                        await stream.close()
+                    adapter.market_stream = None
+    finally:
+        if rest_task is not None:
+            rest_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await rest_task
+
+
+def _hype_authed(adapter: Any) -> bool:
+    addr = str(getattr(adapter, "address", "") or "").strip()
+    return bool(addr and getattr(adapter, "exchange", None) is not None)
+
+
+def _hype_inject_dexs(venue_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """HIP-3 的 coin 带 `io:` 前缀。Info/Exchange 必须带上对应 perp_dexs，否则下单找不到品种。"""
+    cfg = dict(venue_cfg)
+    if cfg.get("perp_dexs"):
+        return cfg
+    dexs: list = []
+    for raw in feed_symbols(cfg) or [str(cfg.get("symbol") or "")]:
+        dex = hype_dex_of(str(raw))
+        if dex and dex not in dexs:
+            dexs.append(dex)
+    if dexs:
+        cfg["perp_dexs"] = dexs
+    return cfg
+
+
+async def _run_hype(
+    venue: str,
+    venue_cfg: Dict[str, Any],
+    book: QuoteBook,
+    stop: asyncio.Event,
+    accounts: Optional[AccountBook] = None,
+) -> None:
+    venue_cfg = _hype_inject_dexs(venue_cfg)
+    symbols = [
+        s
+        for s in (
+            str(x).strip()
+            for x in (feed_symbols(venue_cfg) or [str(venue_cfg.get("symbol") or "")])
+        )
+        if s
+    ]
+    symbol = symbols[0] if symbols else ""
+    wire = {raw: normalize_hype_symbol(raw) for raw in symbols}
+    exchange = str(venue_cfg.get("exchange") or "")
+    stale_ms = int(venue_cfg.get("stale_ms", 2000))
+    rest_interval = float(venue_cfg.get("rest_interval_sec", 1.0))
+    delay = 1.0
+    adapter = create_adapter(_adapter_config(venue_cfg))
+    has_auth = _hype_authed(adapter)
+    rest_task: Optional[asyncio.Task] = None
+    if accounts is not None:
+        rest_task = asyncio.create_task(
+            _account_rest_loop(
+                venue=venue,
+                venue_cfg=venue_cfg,
+                symbol=symbol,
+                adapter=adapter,
+                accounts=accounts,
+                stop=stop,
+                has_auth=has_auth,
+            )
+        )
+
+    def _book_key(sym: str) -> str:
+        return slot_book_key(venue, sym)
+
+    def _match(have: str) -> Optional[str]:
+        got = normalize_hype_symbol(have)
+        if not got:
+            return None
+        for raw, on_wire in wire.items():
+            if _same_symbol(got, on_wire):
+                return raw
+        return None
+
+    async def on_book(message: Dict[str, Any]) -> None:
+        if stop.is_set():
+            return
+        data = message.get("data") if isinstance(message, dict) else message
+        if not isinstance(data, dict):
+            return
+        matched = _match(str(data.get("coin") or ""))
+        if matched is None:
+            return
+        now = time.time()
+        bid, ask, bid_sz, ask_sz = bbo_from_l2(data)
+        if bid is None and ask is None:
+            await book.touch(_book_key(matched), now, source="wss")
+            return
+        await book.update(
+            Quote(
+                venue=_book_key(matched),
+                exchange=exchange,
+                symbol=matched,
+                bid=bid,
+                ask=ask,
+                bid_sz=bid_sz,
+                ask_sz=ask_sz,
+                ts=now,
+                source="wss",
+            )
+        )
+
+    async def on_fills(message: Dict[str, Any]) -> None:
+        """HL 没有仓位推送频道；成交后立刻 REST 刷新，不必等账户兜底周期。"""
+        if accounts is None or stop.is_set() or not has_auth:
+            return
+        coins = parse_hype_fill_coins(message)
+        hit = any(_match(c) is not None for c in coins)
+        if not hit and not hype_fills_snapshot(message):
+            return
+        with contextlib.suppress(Exception):
+            await _push_account_rest(
+                venue=venue,
+                symbols=symbols,
+                adapter=adapter,
+                accounts=accounts,
+            )
+
+    async def rest_once() -> None:
+        now = time.time()
+        snap = book.latest()
+        for matched in symbols:
+            key = _book_key(matched)
+            quote = snap.get(key)
+            if (
+                quote is not None
+                and quote.bid is not None
+                and quote.ask is not None
+                and quote.ts
+                and (now - quote.ts) * 1000 <= stale_ms
+            ):
+                continue
+            with contextlib.suppress(Exception):
+                await _push_ondo_rest(
+                    adapter=adapter,
+                    venue=key,
+                    exchange=exchange,
+                    symbol=matched,
+                    book=book,
+                )
+
+    try:
+        while not stop.is_set():
+            try:
+                for raw in symbols:
+                    await adapter.subscribe_market("book", wire[raw], callback=on_book)
+                stream = adapter.market_stream
+                if accounts is not None and has_auth:
+                    try:
+                        await adapter.subscribe_account("fills", callback=on_fills)
+                    except Exception as exc:
+                        await accounts.patch(
+                            AccountSnap(
+                                venue=venue,
+                                error=(f"私有WSS失败: {exc}")[:80],
+                                ts=time.time(),
+                                source="wss",
+                            )
+                        )
+                delay = 1.0
+                last_rest = 0.0
+                while not stop.is_set():
+                    if stream is None or not stream.connected:
+                        raise RuntimeError("Hype WSS 已断开")
                     now = time.time()
                     if now - last_rest >= rest_interval:
                         last_rest = now

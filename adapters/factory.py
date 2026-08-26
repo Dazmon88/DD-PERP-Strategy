@@ -24,6 +24,7 @@ _ADAPTER_REGISTRY: Dict[str, Type[BasePerpAdapter]] = {
     "lighter_rh": LighterAdapter,
     "robinhood_lighter": LighterAdapter,
     "hype": HypeAdapter,
+    "hyperliquid": HypeAdapter,
     "popdex": PopDEXAdapter,
     "ondo": OndoAdapter,
     "ondoperp": OndoAdapter,

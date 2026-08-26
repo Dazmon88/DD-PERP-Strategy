@@ -1,9 +1,0 @@
-# 跨所匹配表：同一所只连一次 WSS/账户 REST，再按品种拆给各对。
-# enabled: 1=参与比价/下单  0=只占位不订阅（从订阅列表去掉）
-# qty: 一层数量（币）  max_lots: 同向最多层  fee_mult: 带宽相对来回费的倍数
-# symbol_a = venues.a 品种；symbol_b = venues.b 品种（Ondo 用 *-USD.P，PopDEX 用 *-USDT）
-enabled,name,symbol_a,symbol_b,qty,max_lots,fee_mult,note
-0,QQQ,QQQ,QQQ-USD.P,0.1,5,1.2,美股ETF：PopDEX 无此品种，切回 Ondo 再开
-0,MU,MU,MU-USD.P,0.1,5,1.2,美股个股：PopDEX 无此品种，切回 Ondo 再开
-1,BTC,BTC,BTC-USDT,0.00025,2,1.2,RH最小0.0002且名义≥10U
-1,ETH,ETH,ETH-USDT,0.005,2,1.2,RH最小0.005

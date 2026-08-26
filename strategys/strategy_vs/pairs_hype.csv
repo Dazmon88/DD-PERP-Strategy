@@ -1,0 +1,6 @@
+# RH Lighter vs Hyperliquid HIP-3。symbol_a=RH 名，symbol_b=Hype 名。
+# RH：ANTHROPIC 最小 0.0032 / SNDK 最小 0.01，名义≥10U。Hype 名义下限约 10U。
+# qty=0.01 → ANTH 一层约 20U，SNDK 一层约 15U。
+enabled,name,symbol_a,symbol_b,qty,max_lots,fee_mult,note
+1,ANTH,ANTHROPIC,io:ANTH,0.01,2,1.2,RH合约名是ANTHROPIC不是ANTH
+1,SNDK,SNDK,io:SNDK,0.01,2,1.2,RH最小0.01

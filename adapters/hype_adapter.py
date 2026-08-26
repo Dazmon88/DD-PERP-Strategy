@@ -7,8 +7,9 @@ Hyperliquid (Hype) Exchange Adapter Implementation
 
 import os
 import sys
+import time
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # 将本项目根目录加入路径，确保可以导入 hyperliquid 包
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -23,11 +24,59 @@ from eth_account import Account  # type: ignore
 from eth_account.signers.local import LocalAccount  # type: ignore
 
 from adapters.base_adapter import BasePerpAdapter, Balance, Order, Position
+from adapters.hype_stream import HypeMarketStream
 
 from hyperliquid.exchange import Exchange  # type: ignore
 from hyperliquid.info import Info  # type: ignore
 from hyperliquid.utils.constants import MAINNET_API_URL  # type: ignore
 from hyperliquid.utils.types import Cloid  # type: ignore
+
+# 永续价格最多 5 位有效数字，且小数位不超过 MAX_DECIMALS - szDecimals
+_PERP_MAX_DECIMALS = 6
+# 整数价永远合法，所以 10 万以上直接取整
+_INT_PX_ABOVE = 100_000
+
+
+def normalize_hype_symbol(symbol: str) -> str:
+    """Hyperliquid 的 coin 就是原名，builder dex 带 `io:` 前缀，原样保留。"""
+    return (symbol or "").strip()
+
+
+def hype_dex_of(symbol: str) -> str:
+    """`io:ANTH` → `io`；主 dex 返回空串。"""
+    text = normalize_hype_symbol(symbol)
+    return text.split(":", 1)[0] if ":" in text else ""
+
+
+def resolve_hype_tif(time_in_force: str, post_only: bool = False) -> str:
+    """gtc/ioc → Gtc/Ioc；post_only / alo 一律 Alo，否则 Maker 会吃单。"""
+    tif = (time_in_force or "gtc").strip().lower().replace("-", "_")
+    if post_only or tif in ("alo", "post_only", "postonly"):
+        return "Alo"
+    return {"gtc": "Gtc", "ioc": "Ioc", "fok": "Ioc"}.get(tif, "Gtc")
+
+
+def round_hype_px(px: float, sz_decimals: int) -> float:
+    """按官方 rounding.py 的规则收敛价格，否则挂单会被拒。"""
+    value = float(px)
+    if value > _INT_PX_ABOVE:
+        return float(round(value))
+    decimals = max(0, _PERP_MAX_DECIMALS - int(sz_decimals))
+    return round(float(f"{value:.5g}"), decimals)
+
+
+def px_tick_at(px: float, sz_decimals: int) -> Decimal:
+    """当前价位下的最小报价步进：5 位有效数字与小数位上限取更粗的那个。"""
+    value = abs(float(px))
+    if value <= 0:
+        return Decimal("0")
+    if value > _INT_PX_ABOVE:
+        return Decimal("1")
+    decimals = max(0, _PERP_MAX_DECIMALS - int(sz_decimals))
+    # 5 位有效数字允许的小数位：如 2005.1 -> 1 位，14.692 -> 3 位
+    int_digits = len(str(int(value))) if value >= 1 else 0
+    sig_decimals = max(0, 5 - int_digits)
+    return Decimal(1).scaleb(-min(decimals, sig_decimals))
 
 
 class HypeAdapter(BasePerpAdapter):
@@ -53,18 +102,19 @@ class HypeAdapter(BasePerpAdapter):
         api_key = (config.get("api_key") or "").strip()
         private_key = (config.get("private_key") or config.get("secret_key") or "").strip()
         signer_key = api_key or private_key
-        if not signer_key:
-            raise ValueError("Hype 配置中必须包含 api_key（推荐）或 private_key/secret_key（兼容）")
-
-        # 兼容 0x 前缀和裸 hex
-        if signer_key.startswith("0x") or signer_key.startswith("0X"):
-            self._wallet: LocalAccount = Account.from_key(signer_key)
-        else:
-            self._wallet = Account.from_key("0x" + signer_key)
-
-        self.address: str = (config.get("account_address") or self._wallet.address).strip()
-        if api_key and not config.get("account_address"):
-            raise ValueError("使用 api_key 时请配置 account_address（主账户地址，而非 API Wallet 地址）")
+        self._wallet: Optional[LocalAccount] = None
+        self.exchange: Optional[Exchange] = None
+        self.address: str = str(config.get("account_address") or "").strip()
+        if signer_key:
+            # 兼容 0x 前缀和裸 hex
+            if signer_key.startswith("0x") or signer_key.startswith("0X"):
+                self._wallet = Account.from_key(signer_key)
+            else:
+                self._wallet = Account.from_key("0x" + signer_key)
+            if not self.address:
+                self.address = self._wallet.address
+            if api_key and not str(config.get("account_address") or "").strip():
+                raise ValueError("使用 api_key 时请配置 account_address（主账户地址，而非 API Wallet 地址）")
         self.perp_dexs: Optional[List[str]] = config.get("perp_dexs")
         self.timeout: Optional[float] = None
         if "timeout" in config:
@@ -80,13 +130,139 @@ class HypeAdapter(BasePerpAdapter):
             perp_dexs=self.perp_dexs,
             timeout=self.timeout,
         )
-        self.exchange = Exchange(
-            wallet=self._wallet,
-            base_url=self.base_url,
-            account_address=self.address,
-            perp_dexs=self.perp_dexs,
-            timeout=self.timeout,
+        if self._wallet is not None:
+            self.exchange = Exchange(
+                wallet=self._wallet,
+                base_url=self.base_url,
+                account_address=self.address,
+                perp_dexs=self.perp_dexs,
+                timeout=self.timeout,
+            )
+
+        self.network: str = str(config.get("network") or "mainnet")
+        self.ws_url: Optional[str] = config.get("ws_url") or None
+        self.market_stream: Optional[HypeMarketStream] = None
+        # get_balance 和 get_positions 会连着各查一次 user_state，
+        # 账户 REST 兜底每几秒跑一次，短 TTL 合并成一次请求省配额
+        self._state_ttl: float = float(config.get("state_ttl_sec", 1.0))
+        self._state_cache: Dict[str, Tuple[float, Any]] = {}
+        self._sz_decimals: Dict[str, Dict[str, int]] = {}
+
+    # ------------------------------------------------------------------ #
+    # 元数据 / 精度
+    # ------------------------------------------------------------------ #
+
+    def _sz_decimals_map(self, dex: str) -> Dict[str, int]:
+        """{coin: szDecimals}。builder dex 各有各的 universe，按 dex 缓存。"""
+        cached = self._sz_decimals.get(dex)
+        if cached is not None:
+            return cached
+        out: Dict[str, int] = {}
+        try:
+            meta = self.info.meta(dex=dex) if dex else self.info.meta()
+            for item in (meta or {}).get("universe") or []:
+                name = str((item or {}).get("name") or "")
+                if name:
+                    out[name] = int(item.get("szDecimals") or 0)
+        except Exception:
+            pass
+        if out:
+            self._sz_decimals[dex] = out
+        return out
+
+    def sz_decimals_of(self, symbol: str) -> int:
+        coin = normalize_hype_symbol(symbol)
+        table = self._sz_decimals_map(hype_dex_of(coin))
+        return int(table.get(coin, 2))
+
+    def get_market_filters(self, symbol: str) -> Dict[str, Decimal]:
+        """数量步进来自 szDecimals；价格步进随当前价位变（5 位有效数字）。
+
+        调用方通常只查一次就缓存，所以这里给的是「当前价位」的步进。
+        价格若涨过一个数量级（如 9999 → 10001），步进会变粗，缓存下来的
+        细步进就会挂单被拒；ANTH/SNDK 这类离边界很远的品种不受影响。
+        """
+        coin = normalize_hype_symbol(symbol)
+        sz_dec = self.sz_decimals_of(coin)
+        base_inc = Decimal(1).scaleb(-sz_dec)
+        quote_inc = Decimal("0")
+        try:
+            bid, ask = self._book_bbo(coin)
+            ref = None
+            if bid and ask:
+                ref = (float(bid) + float(ask)) / 2.0
+            if ref:
+                quote_inc = px_tick_at(ref, sz_dec)
+        except Exception:
+            pass
+        return {
+            "base_inc": base_inc,
+            "quote_inc": quote_inc,
+            # Hyperliquid 没有 minQty，但有 10 美元名义下限，交给上层名义校验
+            "min_size": base_inc,
+        }
+
+    def _book_bbo(self, symbol: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+        book = self.get_orderbook(symbol, depth=1) or {}
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        bid = Decimal(str(bids[0][0])) if bids else None
+        ask = Decimal(str(asks[0][0])) if asks else None
+        return bid, ask
+
+    # ------------------------------------------------------------------ #
+    # WebSocket
+    # ------------------------------------------------------------------ #
+
+    async def connect_market_stream(self) -> HypeMarketStream:
+        if self.market_stream is None:
+            self.market_stream = HypeMarketStream(
+                base_url=self.ws_url or self.base_url,
+                network=self.network,
+            )
+        if not self.market_stream.connected:
+            await self.market_stream.connect()
+        return self.market_stream
+
+    async def subscribe_market(
+        self,
+        channel: str,
+        symbol: str,
+        callback: Optional[Callable] = None,
+        **kwargs: Any,
+    ) -> None:
+        stream = await self.connect_market_stream()
+        await stream.subscribe_market(
+            topic=channel,
+            symbol=normalize_hype_symbol(symbol),
+            callback=callback,
+            **kwargs,
         )
+
+    async def subscribe_account(
+        self,
+        topic: str,
+        callback: Optional[Callable] = None,
+        user: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        stream = await self.connect_market_stream()
+        await stream.subscribe_account(
+            topic=topic,
+            user=(user or self.address),
+            callback=callback,
+            **kwargs,
+        )
+
+    def _user_state(self, dex: str) -> Dict[str, Any]:
+        """带短 TTL 的 user_state，避免余额和持仓各打一次请求。"""
+        now = time.time()
+        hit = self._state_cache.get(dex)
+        if hit is not None and now - hit[0] < self._state_ttl:
+            return hit[1]
+        state = self.info.user_state(self.address, dex=dex)
+        self._state_cache[dex] = (now, state)
+        return state
 
     def _default_dex(self) -> str:
         """返回默认 dex（优先取配置中的第一个有效 perp_dex）。"""
@@ -97,6 +273,20 @@ class HypeAdapter(BasePerpAdapter):
             if dex_name:
                 return dex_name
         return ""
+
+    def _dex_candidates(self) -> List[str]:
+        """撤单兜底查持仓/挂单时，主 dex 和配置里的 builder dex 都扫一遍。"""
+        seen = set()
+        out: List[str] = []
+        for dex in [self._default_dex(), ""] + list(self.perp_dexs or []):
+            name = str(dex or "").strip()
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        if "" not in seen:
+            out.append("")
+        return out
 
     def _resolve_dex(self, symbol: Optional[str] = None) -> str:
         """
@@ -307,27 +497,30 @@ class HypeAdapter(BasePerpAdapter):
             - 限价单：直接使用传入价格；
             - 市价单：内部转换为带滑点的 IOC 限价单。
         """
-        name = symbol
+        if self.exchange is None:
+            raise Exception("Hype 未配置私钥，无法下单")
+
+        name = normalize_hype_symbol(symbol)
         side_lower = side.lower()
         is_buy = side_lower in ["buy", "long"]
-
-        tif_map = {
-            "gtc": "Gtc",
-            "ioc": "Ioc",
-            "fok": "Ioc",  # Hype 没有单独的 FOK，这里用 IOC 近似
-            "alo": "Alo",
-        }
-        tif = tif_map.get(time_in_force.lower(), "Gtc")
+        post_only = bool(kwargs.get("post_only") or kwargs.get("postOnly"))
+        tif = resolve_hype_tif(time_in_force, post_only=post_only)
+        sz_dec = self.sz_decimals_of(name)
+        sz = float(round(float(quantity), sz_dec))
 
         # 统一使用 Exchange.order 接口，order_type 为 wire dict
         if order_type.lower() == "limit":
             if price is None:
                 raise ValueError("限价单必须指定价格")
-            limit_px = float(price)
+            limit_px = round_hype_px(float(price), sz_dec)
         elif order_type.lower() == "market":
             # 使用内部 _slippage_price 计算激进价格，再下 IOC 限价单模拟市价
             # 默认滑点 5%，如需调整可在 config 中扩展。
-            limit_px = self.exchange._slippage_price(name, is_buy, self.exchange.DEFAULT_SLIPPAGE)  # type: ignore[attr-defined]
+            limit_px = round_hype_px(
+                float(self.exchange._slippage_price(name, is_buy, self.exchange.DEFAULT_SLIPPAGE)),  # type: ignore[attr-defined]
+                sz_dec,
+            )
+            tif = "Ioc"
         else:
             raise ValueError(f"不支持的订单类型: {order_type}")
 
@@ -345,7 +538,7 @@ class HypeAdapter(BasePerpAdapter):
             result = self.exchange.order(
                 name=name,
                 is_buy=is_buy,
-                sz=float(quantity),
+                sz=sz,
                 limit_px=limit_px,
                 order_type=order_type_wire,
                 reduce_only=reduce_only,
@@ -366,10 +559,17 @@ class HypeAdapter(BasePerpAdapter):
             statuses = data.get("statuses") or []
             if statuses:
                 st0 = statuses[0]
+                if isinstance(st0, dict) and st0.get("error"):
+                    raise Exception(f"Hype 下单失败: {st0.get('error')}")
+                filled = st0.get("filled") or {}
                 resting = st0.get("resting") or {}
                 if "oid" in resting:
                     order_id = str(resting["oid"])
-        except Exception:
+                elif "oid" in filled:
+                    order_id = str(filled["oid"])
+        except Exception as exc:
+            if "Hype 下单失败" in str(exc):
+                raise
             order_id = ""
 
         if not order_id and client_order_id:
@@ -401,9 +601,23 @@ class HypeAdapter(BasePerpAdapter):
             - 否则使用 oid。
         """
         if not symbol:
-            raise ValueError("Hype 撤单必须指定 symbol")
+            found = ""
+            if order_id and self.exchange is not None:
+                for dex in self._dex_candidates():
+                    try:
+                        for od in self.info.open_orders(self.address, dex=dex) or []:
+                            if str((od or {}).get("oid")) == str(order_id):
+                                found = str((od or {}).get("coin") or "")
+                                break
+                    except Exception:
+                        continue
+                    if found:
+                        break
+            if not found:
+                raise ValueError("Hype 撤单必须指定 symbol")
+            symbol = found
 
-        name = symbol
+        name = normalize_hype_symbol(symbol)
 
         try:
             if client_order_id:

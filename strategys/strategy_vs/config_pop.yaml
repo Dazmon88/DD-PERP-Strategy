@@ -1,0 +1,78 @@
+# 跨所盘口对照（公共 WSS，终端打印）
+# ledger.live=false：模拟成交，开平写入 *_paper.csv。
+# ledger.live=true ：网格走双腿真单，开平写入 *_live.csv；断线/对账失败只平不开。
+#
+# 价差 > 上沿 → 开一侧（买A卖B 或 买B卖A，看 AB/BA 谁大）；再每高出 step 加 1 层。
+# 价差 < 下沿 → 开反向；再每低于 step 加 1 层。带内持有，不因下沿单独平仓。
+# venues.b.role=maker 时 B 挂 Maker、带宽用 maker_fee；taker 则两边吃单、用 taker_fee。
+# 运行时 a vs b；品种列表见 vs.pairs_csv（每所一条 WSS，按品种拆盘口/仓位）。
+# exchange 需已有 feed：rh_lighter / lighter / ondoperp / ondo / popdex / hype
+# 同所两票（io:ANTH vs io:SNDK）用独立配置，不要改这一份：
+#   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_hype.yaml
+#
+# 用法（仓库根目录）:
+#   python strategys/strategy_vs/vs_monitor.py
+
+vs:
+  pairs_csv: pairs_pop.csv         # 多对：qty / max_lots / fee_mult 按行；所级 WSS/账户只连一次
+  log_path: vs_monitor.log     # 写在本目录；终端刷新看不清时 tail -f vs_monitor.log
+  min_available: 40            # 余额 任一所可用低于此值：只减仓、不开/不加/不反向开
+  print_interval_sec: 0.5      # 只管重绘终端；判定由 WSS 推送驱动，不受这个节流
+  band_refresh_sec: 0.5        # 上下沿重算间隔（要排序整个窗口，不能按 WSS 频率跑）
+  stale_ms: 2000
+  rest_interval_sec: 1       # WSS 过期后 REST 每秒拉一次盘口，推送恢复后停
+  account_rest_sec: 30       # 账户 REST 兜底间隔；WSS 新鲜时不拉
+  account_stale_sec: 15      # 账户 WSS 超过此时长未更新才用 REST
+  grid:
+    fee_mult: 1.2            # 来回成本的安全系数；带宽至少 C×1.3
+    q_lo: 10                 # 样本宽度用 p10～p90，比手续费更宽则用样本
+    q_hi: 90
+    max_lots: 5              # 同一方向最多层数
+    step: 0.0001             # 加/减仓价差间隔（0.01%）
+  ledger:
+    qty: 0.1
+    fill_delay_sec: 0        # 模拟立刻成交，方便对照 CSV
+    leg_gap_sec: 0
+    live: true              # true=网格双腿真单；确认冒烟后再开
+    timeout_sec: 60           # Maker 挂单等待；超时撤 B 再决定是否对冲
+    pos_tolerance: 0.0000001
+    reconcile_interval_sec: 2
+  window:
+    # 采样跟随 WSS 推送，不再是固定 2 次/秒。顶栏「盘口 N/秒 窗口≈X」
+    # 显示实测速率和窗口覆盖时长，按它调 max_samples 到想要的历史长度。
+    min_samples: 500        # 样本达到此数后才算上下沿
+    max_samples: 30000       # FIFO 容量；满了挤掉最旧（>60000 时重算会卡顿）
+    percentile: [10, 20, 80, 90] # 展示分位，可写 90 或 [20, 80]
+    persist: true            # 落盘，重启接着用
+    save_interval_sec: 5     # 运行中每隔几秒写一次；退出时再写一次
+    # persist_path: data/custom.json   # 可选，默认按交易所+品种+费率分文件
+
+# 最小仓开平冒烟（不接入 vs_monitor）
+smoke:
+  enable: true
+  qty: 0.0001
+  side: buy
+  wait_sec: 60
+  timeout_sec: 60           # Maker 挂单等待；超时撤 B 再决定是否对冲
+  venues: both
+
+venues:
+  a:
+    exchange: rh_lighter
+    symbol: MU
+    taker_fee: 0             # Lighter / RH Lighter taker 为 0
+    network: robinhood
+  b:
+    exchange: popdex
+    symbol: BTC-USDT         # 占位；实际品种由 pairs.csv 的 symbol_b 决定
+    role: maker              # maker=挂单；taker=市价（算费和执行一起变）
+    maker_fee: 0.0000        # 按账户实际费率改
+    taker_fee: 0.0003        # role=taker 时用这个
+    network: mainnet
+  # b:
+  #   exchange: ondoperp
+  #   symbol: MU-USD.P
+  #   role: maker
+  #   maker_fee: 0.0001    # Ondo 促销 maker 约 1bp
+  #   taker_fee: 0.00025   # Ondo 促销 taker 约 2.5bp
+  #   network: mainnet

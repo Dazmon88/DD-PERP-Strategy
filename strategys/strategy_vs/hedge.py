@@ -182,7 +182,7 @@ def _maker_fatal(err: str) -> bool:
 
 def _maker_would_take(err: str) -> bool:
     text = (err or "").lower()
-    return "post_only_has_match" in text or "would match" in text
+    return "post_only_has_match" in text or "would match" in text or "would have immediately" in text
 
 
 def _place_taker(
@@ -208,11 +208,11 @@ def _place_taker(
         return None, str(exc)
 
 
-def _cancel(adapter: Any, order_id: str) -> None:
+def _cancel(adapter: Any, order_id: str, symbol: str = "") -> None:
     if not order_id:
         return
     try:
-        adapter.cancel_order(order_id=order_id)
+        adapter.cancel_order(order_id=order_id, symbol=symbol or None)
     except Exception:
         pass
 
@@ -384,7 +384,7 @@ class DualLegBroker:
         with self._working_lock:
             oid = self._working_oid
         if oid:
-            _cancel(self.adapter_b, oid)
+            _cancel(self.adapter_b, oid, self.symbol_b)
 
     def _set_working(self, order_id: str) -> None:
         with self._working_lock:
@@ -543,7 +543,7 @@ class DualLegBroker:
                 if self.b_maker and allow_rest is not None and not allow_rest():
                     if order_id:
                         result.logs.append(f"价差回带内，撤 {order_id} 让出")
-                        _cancel(self.adapter_b, order_id)
+                        _cancel(self.adapter_b, order_id, self.symbol_b)
                         order_id = ""
                         self._set_working("")
                         our_px = None
@@ -612,7 +612,7 @@ class DualLegBroker:
                         result.logs.append(f"追价次数用尽 {chases}")
                         break
                     result.logs.append(f"追价 撤 {order_id} {our_px} → {touch}")
-                    _cancel(self.adapter_b, order_id)
+                    _cancel(self.adapter_b, order_id, self.symbol_b)
                     order_id = ""
                     self._set_working("")
                     our_px = None
@@ -672,7 +672,7 @@ class DualLegBroker:
                 time.sleep(self.poll_sec)
         finally:
             if order_id:
-                _cancel(self.adapter_b, order_id)
+                _cancel(self.adapter_b, order_id, self.symbol_b)
             self._set_working("")
 
         if self._stop.is_set():

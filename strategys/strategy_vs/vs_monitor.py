@@ -37,6 +37,7 @@ from feeds import (  # noqa: E402
     Quote,
     QuoteBook,
     _adapter_config,
+    _hype_inject_dexs,
     exec_fee_of,
     run_feed,
     taker_fee_of,
@@ -249,6 +250,8 @@ def _merge_venue_keys(venue_cfg: Dict[str, Any]) -> Dict[str, Any]:
             out = merge_generated(out, "ondo", only_empty=True)
         if exchange in ("rh_lighter", "rhlighter", "lighter_rh", "robinhood_lighter"):
             out = merge_generated(out, "lighter", only_empty=True)
+        if exchange in ("hyperliquid",):
+            out = merge_generated(out, "hype", only_empty=True)
     except Exception:
         return dict(venue_cfg)
 
@@ -288,7 +291,8 @@ def _short(name: str) -> str:
         "ondoperp": "Ondo",
         "ondoperps": "Ondo",
         "ondo": "Ondo",
-        "popdex": "PopDEX",
+        "hype": "Hype",
+        "hyperliquid": "Hype",
     }
     return aliases.get(name.lower(), name)
 
@@ -841,12 +845,15 @@ def _quote_brief(name: str, q: Optional[Quote], stale_ms: int) -> str:
         body = _pad("-/-", _QW_PXPAIR)
         return f"{head} {_c('33', body)} {_age_cell(None, True, _QW_AGE)} {_c('33', '!')}"
     stale = _is_stale(q, stale_ms)
-    if q.error and (q.bid is None or q.ask is None):
-        err = _pad(str(q.error)[:_QW_PXPAIR], _QW_PXPAIR, "<")
-        return (
-            f"{head} {_c('31', err)} "
-            f"{_age_cell(_age_ms(q), True, _QW_AGE)} {_c('31', 'x')}"
-        )
+    if q.error:
+        if q.bid is None or q.ask is None:
+            err = _pad(str(q.error)[:_QW_PXPAIR], _QW_PXPAIR, "<")
+            return (
+                f"{head} {_c('31', err)} "
+                f"{_age_cell(_age_ms(q), True, _QW_AGE)} {_c('31', 'x')}"
+            )
+        body = _pad(f"{_px_txt(q.bid)}/{_px_txt(q.ask)}", _QW_PXPAIR)
+        return f"{head} {_c('31', body)} {_age_cell(_age_ms(q), True, _QW_AGE)} {_c('31', 'x')}"
     body = _pad(f"{_px_txt(q.bid)}/{_px_txt(q.ask)}", _QW_PXPAIR)
     rest = (q.source or "").lower() == "rest"
     if stale:
@@ -1842,11 +1849,23 @@ async def _print_loop(
                     qb = snap.get(kb)
                     px_a = px_b = None
                     if qa is not None and qb is not None:
-                        px_a = float(qa.ask if delta > 0 else qa.bid)
-                        if b_maker:
-                            px_b = float(qb.ask if delta > 0 else qb.bid)
-                        else:
-                            px_b = float(qb.bid if delta > 0 else qb.ask)
+                        raw_a = qa.ask if delta > 0 else qa.bid
+                        raw_b = (
+                            (qb.ask if delta > 0 else qb.bid)
+                            if b_maker
+                            else (qb.bid if delta > 0 else qb.ask)
+                        )
+                        if raw_a is not None:
+                            px_a = float(raw_a)
+                        if raw_b is not None:
+                            px_b = float(raw_b)
+                    if live and (px_a is None or px_b is None):
+                        # 只平允许在过期行情下触发，但不能在没价时开线程去下单
+                        runlog.line(
+                            f"跳过 {delta:+d} 盘口缺价 A={px_a} B={px_b}",
+                            pair=rt.spec.name,
+                        )
+                        continue
                     lots_before = rt.ledger.lots
                     if rt.ledger.is_reduce(delta):
                         action = "减仓"
@@ -1998,6 +2017,8 @@ async def _amain(config_path: str) -> None:
     venues["b"]["symbols"] = symbols_for_slot(specs, "b")
     venues["a"]["symbol"] = venues["a"]["symbols"][0]
     venues["b"]["symbol"] = venues["b"]["symbols"][0]
+    venues["a"] = _hype_inject_dexs(venues["a"])
+    venues["b"] = _hype_inject_dexs(venues["b"])
     if not venues["a"]["symbols"] or not venues["b"]["symbols"]:
         raise SystemExit("匹配表没有可订阅品种")
 

@@ -1,0 +1,5 @@
+enabled,name,symbol_a,symbol_b,qty,max_lots,fee_mult,note
+1,QQQ,QQQ,QQQ-USD.P,0.03,10,1.2,美股ETF
+1,MU,MU,MU-USD.P,0.03,10,1.2,美股个股
+1,BTC,BTC,BTC-USD.P,0.0003,10,1.4,加密 一层宜小
+1,ETH,ETH,ETH-USD.P,0.003,10,1.5,加密 一层宜小
