@@ -261,12 +261,11 @@ class SpreadGrid:
             return (1 if current_lots > 0 else -1) * self.max_lots
         n = abs(int(current_lots))
         if n == 0:
+            # 空仓时 edge 是 max(ab, ba)：跌破下沿说明两条腿都差，观望即可。
+            # 只有持仓时 edge 才是持仓那条腿，那时跌破下沿才意味着对面变好、该反手。
             edge, sign = self._hold_edge(ab_pct, ba_pct, 0)
             add_up = min(self.max_lots, self._crossed(edge, self.upper, above=True))
-            if add_up > 0:
-                return sign * add_up
-            add_lo = min(self.max_lots, self._crossed(edge, self.lower, above=False))
-            return -sign * add_lo if add_lo > 0 else 0
+            return sign * add_up if add_up > 0 else 0
         # edge 取持仓方向那条腿，与 mags=max(ab,ba) 标定的上下沿同尺，
         # 所以多空共用一套判断：越上沿=同向加层，跌破下沿=开反向。
         hold = 1 if current_lots > 0 else -1
@@ -318,13 +317,14 @@ class SpreadGrid:
             action = "加仓"
         else:
             action = "减仓"
+        # 门槛与 desired_lots 对齐：加层看 upper+n*step，反手固定看 lower（不含 step）
         next_add = None
         next_reduce = None
         if self.upper is not None and self.lower is not None:
-            if current_lots >= 0 and n < self.max_lots:
+            if n < self.max_lots:
                 next_add = self.upper + n * self.step
-            if current_lots <= 0 and n < self.max_lots:
-                next_reduce = self.lower - n * self.step
+            if n:
+                next_reduce = self.lower
         tick = GridTick(
             lots=current_lots,
             target=target,

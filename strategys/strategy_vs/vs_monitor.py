@@ -839,13 +839,17 @@ def _trigger_cell(
         return _pad(_c("2", "-"), width, "<")
     n = abs(int(lots))
     up_need = (upper + n * step) - mag if n < max_lots else None
-    dn_need = mag - lower
-    if dn_need <= 0 or (up_need is not None and up_need <= 0):
-        return _pad(_c("1;33", "就绪"), width, "<")
-    up_tag, dn_tag = ("加", "反") if n else ("开", "开")
-    cands = [(dn_need, f"{dn_tag}-{dn_need * 1e4:.1f}")]
+    # 空仓没有下沿触发：那时 mag 是两腿最大值，跌破只说明两边都差
+    dn_need = (mag - lower) if n else None
+    cands = []
     if up_need is not None:
-        cands.append((up_need, f"{up_tag}+{up_need * 1e4:.1f}"))
+        cands.append((up_need, f"{'加' if n else '开'}+{up_need * 1e4:.1f}"))
+    if dn_need is not None:
+        cands.append((dn_need, f"反-{dn_need * 1e4:.1f}"))
+    if not cands:
+        return _pad(_c("2", "满仓"), width, "<")
+    if min(need for need, _ in cands) <= 0:
+        return _pad(_c("1;33", "就绪"), width, "<")
     _, text = min(cands, key=lambda item: item[0])
     return _pad(_c("2", text), width, "<")
 
