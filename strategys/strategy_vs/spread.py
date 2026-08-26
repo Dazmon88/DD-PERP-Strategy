@@ -118,10 +118,10 @@ class SpreadWindow:
         return len(self._samples)
 
 
-def _percentile(values: List[float], pct: float) -> float:
-    if not values:
+def _percentile_sorted(ordered: List[float], pct: float) -> float:
+    """已排序序列取分位。同一序列要取多个分位时只排一次。"""
+    if not ordered:
         return 0.0
-    ordered = sorted(values)
     if len(ordered) == 1:
         return ordered[0]
     rank = (len(ordered) - 1) * max(0.0, min(100.0, pct)) / 100.0
@@ -129,6 +129,12 @@ def _percentile(values: List[float], pct: float) -> float:
     hi = min(lo + 1, len(ordered) - 1)
     frac = rank - lo
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
+def _percentile(values: List[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    return _percentile_sorted(sorted(values), pct)
 
 
 @dataclass
@@ -212,14 +218,18 @@ class SpreadGrid:
             self.frozen = True
             self.note = "有仓，上下沿已冻"
             return
-        mags = [max(ab[i], ba[i]) for i in range(n)]
-        costs = [-(ab[i] + ba[i]) for i in range(n)]
-        cost_emp = max(0.0, _percentile(costs, 50.0))
+        # 每条序列只排一次：窗口大了以后排序是这里的主要开销
+        mags = sorted(max(ab[i], ba[i]) for i in range(n))
+        costs = sorted(-(ab[i] + ba[i]) for i in range(n))
+        cost_emp = max(0.0, _percentile_sorted(costs, 50.0))
         cost = max(self.cost_cfg, cost_emp)
         width_fee = cost * self.fee_mult
-        width_sample = max(0.0, _percentile(mags, self.q_hi) - _percentile(mags, self.q_lo))
+        width_sample = max(
+            0.0,
+            _percentile_sorted(mags, self.q_hi) - _percentile_sorted(mags, self.q_lo),
+        )
         width = max(width_fee, width_sample)
-        center = _percentile(mags, 50.0)
+        center = _percentile_sorted(mags, 50.0)
         self.cost = cost
         self.width = width
         self.center = center
@@ -584,21 +594,23 @@ def load_windows(
     return loaded, extra, pnl
 
 
-def save_windows(
-    path: Path,
+def snapshot_windows(
     identity: Dict[str, Any],
     windows: Dict[str, SpreadWindow],
     grid: Optional[SpreadGrid] = None,
     pnl: Any = None,
-) -> None:
+) -> Optional[Dict[str, Any]]:
+    """把窗口拷成普通 list。必须在持有者线程里跑：deque 边写边读会炸。
+
+    返回 None 表示没有变更、不用落盘。慢的 JSON 序列化交给 write_snapshot。
+    """
     dirty = any(w.dirty for w in windows.values())
     if grid is not None:
         dirty = dirty or grid.dirty
     if pnl is not None:
         dirty = dirty or bool(getattr(pnl, "dirty", False))
     if not dirty:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
+        return None
     payload = {
         "identity": identity,
         "saved_at": time.time(),
@@ -608,6 +620,18 @@ def save_windows(
         payload["grid"] = grid.dump()
     if pnl is not None and getattr(pnl, "ready", False):
         payload["pnl"] = pnl.dump()
+    for window in windows.values():
+        window.dirty = False
+    if grid is not None:
+        grid.dirty = False
+    if pnl is not None:
+        pnl.dirty = False
+    return payload
+
+
+def write_snapshot(path: Path, payload: Dict[str, Any]) -> None:
+    """序列化 + 落盘，可以在工作线程里跑。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -615,9 +639,15 @@ def save_windows(
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
-    for window in windows.values():
-        window.dirty = False
-    if grid is not None:
-        grid.dirty = False
-    if pnl is not None:
-        pnl.dirty = False
+
+
+def save_windows(
+    path: Path,
+    identity: Dict[str, Any],
+    windows: Dict[str, SpreadWindow],
+    grid: Optional[SpreadGrid] = None,
+    pnl: Any = None,
+) -> None:
+    payload = snapshot_windows(identity, windows, grid=grid, pnl=pnl)
+    if payload is not None:
+        write_snapshot(path, payload)

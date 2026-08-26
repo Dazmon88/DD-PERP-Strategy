@@ -15,7 +15,8 @@ vs:
   pairs_csv: pairs.csv         # 多对：qty / max_lots / fee_mult 按行；所级 WSS/账户只连一次
   log_path: vs_monitor.log     # 写在本目录；终端刷新看不清时 tail -f vs_monitor.log
   min_available: 40            # 余额 任一所可用低于此值：只减仓、不开/不加/不反向开
-  print_interval_sec: 0.5
+  print_interval_sec: 0.5      # 只管重绘终端；判定由 WSS 推送驱动，不受这个节流
+  band_refresh_sec: 0.5        # 上下沿重算间隔（要排序整个窗口，不能按 WSS 频率跑）
   stale_ms: 2000
   rest_interval_sec: 1       # WSS 过期后 REST 每秒拉一次盘口，推送恢复后停
   account_rest_sec: 30       # 账户 REST 兜底间隔；WSS 新鲜时不拉
@@ -35,8 +36,10 @@ vs:
     pos_tolerance: 0.0000001
     reconcile_interval_sec: 2
   window:
+    # 采样跟随 WSS 推送，不再是固定 2 次/秒。顶栏「盘口 N/秒 窗口≈X」
+    # 显示实测速率和窗口覆盖时长，按它调 max_samples 到想要的历史长度。
     min_samples: 500        # 样本达到此数后才算上下沿
-    max_samples: 10000       # FIFO 容量；满了挤掉最旧
+    max_samples: 30000       # FIFO 容量；满了挤掉最旧（>60000 时重算会卡顿）
     percentile: [10, 20, 80, 90] # 展示分位，可写 90 或 [20, 80]
     persist: true            # 落盘，重启接着用
     save_interval_sec: 5     # 运行中每隔几秒写一次；退出时再写一次

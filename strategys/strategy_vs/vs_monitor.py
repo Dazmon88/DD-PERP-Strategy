@@ -59,6 +59,8 @@ from spread import (  # noqa: E402
     SpreadGrid,
     SpreadWindow,
     load_windows,
+    snapshot_windows,
+    write_snapshot,
     p_label,
     pair_legs,
     parse_percentiles,
@@ -85,6 +87,9 @@ class PairRuntime:
     last_recon: float = 0.0
     last_align: float = 0.0
     last_save: float = 0.0
+    last_band: float = 0.0
+    last_band_lots: int = 0
+    save_task: Optional[asyncio.Task] = None
     last_recon_log: float = 0.0
     last_ready: Optional[bool] = None
     last_exec_end: float = 0.0
@@ -303,6 +308,46 @@ def _quote_status(q: Optional[Quote], stale: bool) -> str:
     if (q.source or "").lower() == "rest":
         return _c("33", "REST")
     return _c("32", "OK")
+
+
+def _write_snapshot_quiet(path, payload) -> None:
+    """后台落盘：磁盘出问题不该带崩交易循环，下一轮会重试。"""
+    with contextlib.suppress(OSError):
+        write_snapshot(path, payload)
+
+
+def _feed_rate_tag(rate: Optional[float], max_samples: int) -> str:
+    """推送速率 + 窗口满时覆盖多长时间，方便据此调 max_samples。"""
+    if not rate or rate <= 0:
+        return "盘口 测速中"
+    secs = max_samples / rate
+    if secs >= 3600:
+        span = f"{secs / 3600:.1f}小时"
+    elif secs >= 60:
+        span = f"{secs / 60:.0f}分钟"
+    else:
+        span = f"{secs:.0f}秒"
+    return f"盘口 {rate:.0f}/秒  窗口≈{span}"
+
+
+class _Rate:
+    """盘口推送速率，用于估算窗口覆盖多长时间。"""
+
+    def __init__(self, span: float = 5.0) -> None:
+        self.span = float(span)
+        self._ts = 0.0
+        self._count = 0
+        self.value: Optional[float] = None
+
+    def sample(self, now: float, count: int) -> Optional[float]:
+        if self._ts <= 0:
+            self._ts, self._count = now, count
+            return self.value
+        dt = now - self._ts
+        if dt >= self.span:
+            self.value = (count - self._count) / dt
+            self._ts, self._count = now, count
+        return self.value
 
 
 def _window_sizes(win_cfg: Dict[str, Any]) -> tuple[int, int]:
@@ -881,6 +926,7 @@ def _sync_pair_tick(
     ledger: Optional[PositionLedger],
     key_a: str,
     key_b: str,
+    refresh_band: bool = True,
 ) -> tuple[Optional[GridTick], bool, Optional[Quote], Optional[Quote]]:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     qa = quotes.get(key_a) or quotes.get("a")
@@ -903,11 +949,14 @@ def _sync_pair_tick(
             windows["ba"].add(legs[1].pct)
         lots_now = ledger.lots if ledger is not None else (grid.lots if grid else 0)
         if grid is not None and windows:
-            grid.observe(
-                windows["ab"].values(),
-                windows["ba"].values(),
-                lots_now,
-            )
+            # 采样每 tick 都做（上面已 add），但重算上下沿要排序整个窗口，
+            # 按 WSS 频率跑会吃满 CPU 并阻塞收包，所以由调用方限流。
+            if refresh_band:
+                grid.observe(
+                    windows["ab"].values(),
+                    windows["ba"].values(),
+                    lots_now,
+                )
             tick = grid.peek(legs[0].pct, legs[1].pct, lots_now)
     return tick, not (a_stale or b_stale), qa, qb
 
@@ -961,6 +1010,7 @@ def _render_multi_board(
     live: bool,
     ticks: List[tuple],
     pnl: Optional[CombinedPnl] = None,
+    rate: Optional[float] = None,
 ) -> str:
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
@@ -992,7 +1042,7 @@ def _render_multi_board(
     head = [
         f"{_c('1', a_name)} vs {_c('1', b_name)}   {_c('2', now)}   "
         f"{len(runtimes)}对   {busy}   "
-        f"{'真单' if live else '模拟'}   每所一条连接",
+        f"{'真单' if live else '模拟'}   {_c('2', _feed_rate_tag(rate, max_samples))}",
         _c("2", f"{_pad('所', 6, '<')} {_pad('净值$', w_money)} {_pad('可用$', w_money)} "
                 f"{_pad('盈亏$', w_money)}  账户源"),
         f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), w_money)} "
@@ -1599,6 +1649,13 @@ async def _print_loop(
     last_margin = ""
     last_align_any = 0.0
     align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
+    band_refresh = float(vs_cfg.get("band_refresh_sec", 0.5))
+    # 错开各对的重算时点：排序整个窗口要十几毫秒，几对挤在同一帧会明显卡顿
+    for i, rt in enumerate(runtimes):
+        rt.last_band = time.time() - band_refresh * i / max(1, len(runtimes))
+    last_print = 0.0
+    book_rate = _Rate()
+    stop_task = asyncio.create_task(stop.wait())
     if sys.stdout.isatty():
         sys.stdout.write("\033[?25l")
         sys.stdout.flush()
@@ -1701,10 +1758,18 @@ async def _print_loop(
                     runlog.line(rt.paper.last, pair=rt.spec.name)
                     break
 
-            _clear_tty()
             ticks: List[tuple] = []
             pending: List[tuple] = []
             for rt in runtimes:
+                # 仓位归零要立刻解冻重标带宽，不能等限流窗口
+                lots_now = rt.ledger.lots
+                refresh = (
+                    now - rt.last_band >= band_refresh
+                    or (lots_now == 0 and rt.last_band_lots != 0)
+                )
+                if refresh:
+                    rt.last_band = now
+                    rt.last_band_lots = lots_now
                 tick, quotes_ok, qa, qb = _sync_pair_tick(
                     vs_cfg=vs_cfg,
                     venues=rt.venues,
@@ -1714,6 +1779,7 @@ async def _print_loop(
                     ledger=rt.ledger,
                     key_a=rt.spec.book_a(),
                     key_b=rt.spec.book_b(),
+                    refresh_band=refresh,
                 )
                 rt.grid.lots = rt.ledger.lots
                 ticks.append((rt, tick, quotes_ok, qa, qb))
@@ -1730,38 +1796,45 @@ async def _print_loop(
                 )
                 if want:
                     pending.append((rt, tick, want))
-            if multi:
-                text = _render_multi_board(
-                    vs_cfg=vs_cfg,
-                    venues=venues,
-                    runtimes=runtimes,
-                    quotes=snap,
-                    accounts=acct,
-                    live=live,
-                    ticks=ticks,
-                    pnl=session_pnl,
-                )
-            else:
-                rt0 = runtimes[0]
-                text, _, _ = _render(
-                    vs_cfg=vs_cfg,
-                    venues=rt0.venues,
-                    quotes=snap,
-                    windows=rt0.windows,
-                    grid=rt0.grid,
-                    ledger=rt0.ledger,
-                    accounts=acct,
-                    last_layer=rt0.last_layer,
-                    hedge_busy=_pair_busy(rt0),
-                    live=live,
-                    pnl=session_pnl,
-                    paper=rt0.paper,
-                    key_a=rt0.spec.book_a(),
-                    key_b=rt0.spec.book_b(),
-                    pair_name=rt0.spec.name,
-                    observe=False,
-                )
-            print(text, flush=True)
+            # 判定每次 WSS 推送都跑；重绘仍按 print_interval_sec 节流
+            text = None
+            if now - last_print >= interval:
+                last_print = now
+                _clear_tty()
+                if multi:
+                    text = _render_multi_board(
+                        vs_cfg=vs_cfg,
+                        venues=venues,
+                        runtimes=runtimes,
+                        quotes=snap,
+                        accounts=acct,
+                        live=live,
+                        ticks=ticks,
+                        pnl=session_pnl,
+                        rate=book_rate.sample(now, book.updates),
+                    )
+                else:
+                    rt0 = runtimes[0]
+                    text, _, _ = _render(
+                        vs_cfg=vs_cfg,
+                        venues=rt0.venues,
+                        quotes=snap,
+                        windows=rt0.windows,
+                        grid=rt0.grid,
+                        ledger=rt0.ledger,
+                        accounts=acct,
+                        last_layer=rt0.last_layer,
+                        hedge_busy=_pair_busy(rt0),
+                        live=live,
+                        pnl=session_pnl,
+                        paper=rt0.paper,
+                        key_a=rt0.spec.book_a(),
+                        key_b=rt0.spec.book_b(),
+                        pair_name=rt0.spec.name,
+                        observe=False,
+                    )
+            if text is not None:
+                print(text, flush=True)
             if not stop.is_set():
                 for rt, tick, delta in pending:
                     ka, kb = rt.spec.book_a(), rt.spec.book_b()
@@ -1835,24 +1908,37 @@ async def _print_loop(
                 for rt in runtimes:
                     if now - rt.last_save < save_interval:
                         continue
-                    try:
-                        save_windows(
-                            rt.store_path,
-                            rt.identity,
-                            rt.windows,
-                            grid=rt.grid,
-                            pnl=rt.combined,
-                        )
-                        rt.last_save = now
-                    except OSError:
-                        rt.last_save = now
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                continue
+                    if rt.save_task is not None and not rt.save_task.done():
+                        continue
+                    rt.last_save = now
+                    # 快照必须在本线程做（deque 边写边读会炸），
+                    # 序列化和 fsync 几十毫秒，扔线程里别卡住收包和判定
+                    payload = snapshot_windows(
+                        rt.identity, rt.windows, grid=rt.grid, pnl=rt.combined
+                    )
+                    if payload is None:
+                        continue
+                    rt.save_task = asyncio.create_task(
+                        asyncio.to_thread(_write_snapshot_quiet, rt.store_path, payload)
+                    )
+            # 有推送就立刻醒；没推送也不能睡过下一次重绘
+            wait_s = max(0.005, interval - (now - last_print))
+            tick_task = asyncio.create_task(book.wait_update(wait_s))
+            await asyncio.wait(
+                {stop_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not tick_task.done():
+                tick_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tick_task
+            if stop_task.done():
+                break
     except asyncio.CancelledError:
         stop.set()
     finally:
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
         if sys.stdout.isatty():
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
@@ -1872,6 +1958,11 @@ async def _print_loop(
                 with contextlib.suppress(Exception):
                     closer()
         if persist_on:
+            # 先等在飞的后台落盘收工，否则它的 os.replace 会盖掉下面这次
+            for rt in runtimes:
+                if rt.save_task is not None and not rt.save_task.done():
+                    with contextlib.suppress(Exception):
+                        await rt.save_task
             for rt in runtimes:
                 with contextlib.suppress(OSError):
                     save_windows(

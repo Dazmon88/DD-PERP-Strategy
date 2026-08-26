@@ -84,6 +84,8 @@ class QuoteBook:
     def __init__(self) -> None:
         self._data: Dict[str, Quote] = {}
         self._lock = asyncio.Lock()
+        self._tick = asyncio.Event()
+        self.updates = 0
 
     async def update(self, quote: Quote) -> None:
         async with self._lock:
@@ -99,6 +101,8 @@ class QuoteBook:
                         quote.ask_sz = prev.ask_sz
             # 价格未变但量/档位变了也算一次 WSS 更新（ts 用调用方传入的值）
             self._data[quote.venue] = quote
+            self.updates += 1
+        self._tick.set()
 
     async def touch(self, venue: str, ts: float, source: str = "wss") -> None:
         """WSS 有推送但盘口字段没变（或只有深度增量）时，刷新存活时间。"""
@@ -107,6 +111,21 @@ class QuoteBook:
             if prev is None or prev.bid is None or prev.ask is None:
                 return
             self._data[venue] = replace(prev, ts=ts, error="", source=source)
+            self.updates += 1
+        self._tick.set()
+
+    async def wait_update(self, timeout: float) -> bool:
+        """等下一次盘口推送；超时返回 False。
+
+        先 clear 再等：期间若有推送落在 clear 之后会立刻唤醒；落在处理与
+        clear 之间的那一次会被并进下一帧，因为醒来后读的总是最新快照。
+        """
+        self._tick.clear()
+        try:
+            await asyncio.wait_for(self._tick.wait(), max(0.0, float(timeout)))
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     async def snapshot(self) -> Dict[str, Quote]:
         async with self._lock:
