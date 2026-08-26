@@ -58,16 +58,16 @@ venues:
     taker_fee: 0             # Lighter / RH Lighter taker 为 0
     network: robinhood
   b:
-    exchange: ondoperp
-    symbol: MU-USD.P
+    exchange: popdex
+    symbol: BTC-USDT         # 占位；实际品种由 pairs.csv 的 symbol_b 决定
     role: maker              # maker=挂单；taker=市价（算费和执行一起变）
-    maker_fee: 0.0001        # Ondo 促销 maker 约 1bp
-    taker_fee: 0.00025       # Ondo 促销 taker 约 2.5bp，role=taker 时用这个
+    maker_fee: 0.0000        # 按账户实际费率改
+    taker_fee: 0.0003        # role=taker 时用这个
     network: mainnet
   # b:
-  #   exchange: popdex
-  #   symbol: BTC-USDT
-  #   role: maker          # 或 taker
-  #   maker_fee: 0.0000    # 按账户实际费率改
-  #   taker_fee: 0.0003
+  #   exchange: ondoperp
+  #   symbol: MU-USD.P
+  #   role: maker
+  #   maker_fee: 0.0001    # Ondo 促销 maker 约 1bp
+  #   taker_fee: 0.00025   # Ondo 促销 taker 约 2.5bp
   #   network: mainnet
