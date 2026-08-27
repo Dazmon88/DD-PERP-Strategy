@@ -16,6 +16,7 @@ from adapters.popdex_adapter import normalize_popdex_symbol
 from accounts import (  # noqa: E402
     AccountBook,
     AccountSnap,
+    ThreadWake,
     from_adapter_balance,
     parse_lighter_positions,
     parse_lighter_positions_map,
@@ -26,6 +27,7 @@ from accounts import (  # noqa: E402
     parse_ondo_positions_map,
     ondo_positions_complete,
     parse_popdex_account,
+    parse_popdex_fills,
     parse_popdex_positions_map,
     popdex_positions_complete,
     parse_hype_fill_coins,
@@ -95,6 +97,15 @@ class QuoteBook:
         self._lock = asyncio.Lock()
         self._tick = asyncio.Event()
         self.updates = 0
+        self._thread_wake: Optional[ThreadWake] = None
+
+    def set_thread_wake(self, wake: Optional[ThreadWake]) -> None:
+        self._thread_wake = wake
+
+    def _ping_thread(self) -> None:
+        wake = self._thread_wake
+        if wake is not None:
+            wake.ping()
 
     async def update(self, quote: Quote) -> None:
         async with self._lock:
@@ -114,6 +125,7 @@ class QuoteBook:
             self._data[quote.venue] = quote
             self.updates += 1
         self._tick.set()
+        self._ping_thread()
 
     async def touch(self, venue: str, ts: float, source: str = "wss") -> None:
         """WSS 有推送但盘口字段没变（或只有深度增量）时，刷新存活时间。"""
@@ -124,6 +136,7 @@ class QuoteBook:
             self._data[venue] = replace(prev, ts=ts, error="", source=source)
             self.updates += 1
         self._tick.set()
+        self._ping_thread()
 
     async def wait_update(self, timeout: float) -> bool:
         """等下一次盘口推送；超时返回 False。
@@ -1205,6 +1218,22 @@ async def _run_popdex(
                 )
             )
 
+    async def on_fill(message: Dict[str, Any]) -> None:
+        """成交推送：先于持仓频道到达时也能让执行器立刻对冲 A。"""
+        if accounts is None or stop.is_set():
+            return
+        now = time.time()
+        for item in parse_popdex_fills(message):
+            matched = _match(str(item.get("symbol") or ""))
+            if matched is None:
+                continue
+            accounts.ingest_fill(
+                _book_key(matched),
+                float(item["signed"]),
+                str(item["fill_id"]),
+                now,
+            )
+
     async def rest_once() -> None:
         """只对过期品种拉 REST 盘口。"""
         now = time.time()
@@ -1239,6 +1268,8 @@ async def _run_popdex(
                     try:
                         await adapter.subscribe_account("account", callback=on_account)
                         await adapter.subscribe_account("position", callback=on_position)
+                        with contextlib.suppress(Exception):
+                            await adapter.subscribe_account("fill", callback=on_fill)
                     except Exception as exc:
                         await accounts.patch(
                             AccountSnap(

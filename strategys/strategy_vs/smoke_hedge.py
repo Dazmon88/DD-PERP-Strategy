@@ -25,7 +25,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from accounts import AccountBook  # noqa: E402
+from accounts import AccountBook, ThreadWake  # noqa: E402
 from adapters.factory import create_adapter  # noqa: E402
 from feeds import QuoteBook, run_feed, venue_role  # noqa: E402
 from hedge import DualLegBroker  # noqa: E402
@@ -169,6 +169,9 @@ async def _amain() -> int:
             f"仓A={_fmt_src(accts.get('a'))} B={_fmt_src(accts.get('b'))}"
         )
         b_maker = venue_role(b_cfg) == "maker"
+        hedge_wake = ThreadWake()
+        book.set_thread_wake(hedge_wake)
+        accounts.set_thread_wake(hedge_wake)
         broker = DualLegBroker(
             adapter_a,
             adapter_b,
@@ -181,6 +184,7 @@ async def _amain() -> int:
             log=print,
             pos_lookup=lambda slot: _pos_lookup(accounts, slot),
             bbo_lookup=lambda: _bbo_lookup(book),
+            wake=hedge_wake,
         )
         pos_a = broker._pos("a")
         pos_b = broker._pos("b")

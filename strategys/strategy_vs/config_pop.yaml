@@ -42,6 +42,7 @@ vs:
     leg_gap_sec: 0
     live: true              # true=网格双腿真单；确认冒烟后再开
     timeout_sec: 60           # Maker 挂单等待；超时撤 B 再决定是否对冲
+    hedge_cooldown_sec: 1     # B 成交后打 A 的最短间隔；成交推送和持仓频道哪个快用哪个
     pos_tolerance: 0.0000001
     reconcile_interval_sec: 2
   window:

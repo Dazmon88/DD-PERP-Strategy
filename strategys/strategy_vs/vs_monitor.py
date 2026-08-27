@@ -31,7 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from accounts import AccountBook, AccountSnap, CombinedPnl  # noqa: E402
+from accounts import AccountBook, AccountSnap, CombinedPnl, ThreadWake  # noqa: E402
 from adapters.factory import create_adapter  # noqa: E402
 from feeds import (  # noqa: E402
     Quote,
@@ -709,6 +709,7 @@ def _ledger_cfg(vs_cfg: Dict[str, Any]) -> Dict[str, Any]:
         "pos_tolerance": float(raw.get("pos_tolerance", 1e-7)),
         "live": bool(raw.get("live", False)),
         "timeout_sec": float(raw.get("timeout_sec", 60.0)),
+        "hedge_cooldown_sec": max(0.0, float(raw.get("hedge_cooldown_sec", 1.0))),
     }
 
 
@@ -1586,6 +1587,9 @@ async def _print_loop(
     adapter_a = None
     adapter_b = None
     b_maker = venue_role(venues["b"]) == "maker"
+    hedge_wake = ThreadWake()
+    book.set_thread_wake(hedge_wake)
+    accounts.set_thread_wake(hedge_wake)
     if live:
         adapter_a = create_adapter(_adapter_config(venues["a"]))
         adapter_b = create_adapter(_adapter_config(venues["b"]))
@@ -1657,6 +1661,11 @@ async def _print_loop(
                     accounts.apply_fill(ka, qty) if slot == "a" else None
                 ),
                 bbo_lookup=lambda kb=kb: _wss_bbo(book, kb),
+                fill_since=lambda t0, kb=kb: Decimal(
+                    str(accounts.signed_fills_since(kb, t0))
+                ),
+                hedge_cooldown_sec=lcfg["hedge_cooldown_sec"],
+                wake=hedge_wake,
                 log=lambda m, name=spec.name: runlog.line(m, pair=name),
             )
         csv_name = f"{store_path.stem}_{'live' if live else 'paper'}.csv"
@@ -1980,13 +1989,16 @@ async def _print_loop(
             # 有推送就立刻醒；没推送也不能睡过下一次重绘
             wait_s = max(0.005, interval - (now - last_print))
             tick_task = asyncio.create_task(book.wait_update(wait_s))
+            acct_task = asyncio.create_task(accounts.wait_update(wait_s))
             await asyncio.wait(
-                {stop_task, tick_task}, return_when=asyncio.FIRST_COMPLETED
+                {stop_task, tick_task, acct_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
-            if not tick_task.done():
-                tick_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await tick_task
+            for pending_wait in (tick_task, acct_task):
+                if not pending_wait.done():
+                    pending_wait.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await pending_wait
             if stop_task.done():
                 break
     except asyncio.CancelledError:

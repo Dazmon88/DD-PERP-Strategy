@@ -10,6 +10,21 @@ from typing import Any, Dict, Optional
 _POS_EPS = 1e-12
 
 
+class ThreadWake:
+    """给同步执行线程用：WSS 回调 ping，执行循环 wait。先到的推送不会被 clear 丢掉。"""
+
+    def __init__(self) -> None:
+        self._ev = threading.Event()
+
+    def ping(self) -> None:
+        self._ev.set()
+
+    def wait(self, timeout: float) -> bool:
+        ok = self._ev.wait(max(0.0, float(timeout)))
+        self._ev.clear()
+        return ok
+
+
 @dataclass
 class AccountSnap:
     venue: str
@@ -34,6 +49,28 @@ class AccountBook:
         self._flat_ok: set[str] = set()
         self._last_rest: Dict[str, float] = {}
         self._peers: Dict[str, str] = {}
+        self._fill_seen: set[str] = set()
+        self._fill_tape: list = []
+        self._async_tick = asyncio.Event()
+        self._thread_wake: Optional[ThreadWake] = None
+
+    def set_thread_wake(self, wake: Optional[ThreadWake]) -> None:
+        self._thread_wake = wake
+
+    def _notify(self) -> None:
+        self._async_tick.set()
+        wake = self._thread_wake
+        if wake is not None:
+            wake.ping()
+
+    async def wait_update(self, timeout: float) -> bool:
+        """等下一次持仓/成交推送；超时返回 False。语义同 QuoteBook.wait_update。"""
+        self._async_tick.clear()
+        try:
+            await asyncio.wait_for(self._async_tick.wait(), max(0.0, float(timeout)))
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     def set_peers(self, mapping: Dict[str, str]) -> None:
         """品种级对锁：a:QQQ ↔ b:QQQ-USD.P，避免多品种共用 a/b 把仓位盖掉。"""
@@ -115,7 +152,7 @@ class AccountBook:
             return 0.0
         return sticky
 
-    def _commit(self, snap: AccountSnap) -> None:
+    def _commit(self, snap: AccountSnap) -> bool:
         incoming_balance = snap.equity is not None or snap.available is not None
         prev = self._data.get(snap.venue)
         raw_pos = snap.pos_qty
@@ -132,7 +169,7 @@ class AccountBook:
                 float(prev.balance_ts or 0.0) if prev is not None else 0.0
             )
             self._data[snap.venue] = snap
-            return
+            return False
         if prev is not None:
             if snap.equity is None:
                 snap.equity = prev.equity
@@ -153,11 +190,14 @@ class AccountBook:
         elif prev is not None:
             snap.balance_ts = float(prev.balance_ts or 0.0)
         self._data[snap.venue] = snap
+        return raw_pos is not None
 
     async def patch(self, snap: AccountSnap) -> None:
         async with self._lock:
             with self._tlock:
-                self._commit(snap)
+                notify = self._commit(snap)
+        if notify:
+            self._notify()
 
     def apply_fill(self, venue: str, signed_delta: float) -> Optional[float]:
         """本地乐观成交：对冲下单成功后立刻改粘性仓，避免 WSS 仍是 0 时连打。"""
@@ -192,7 +232,40 @@ class AccountBook:
                 prev.source = "local"
                 prev.ts = now
                 prev.error = ""
-            return new
+        self._notify()
+        return new
+
+    def ingest_fill(
+        self,
+        venue: str,
+        signed_qty: float,
+        fill_id: str,
+        ts: Optional[float] = None,
+    ) -> bool:
+        """记下一条成交。按 fill_id 去重。不改仓位快照，避免和持仓推送叠算。"""
+        delta = float(signed_qty)
+        fid = str(fill_id or "").strip()
+        if abs(delta) <= _POS_EPS or not fid:
+            return False
+        now = time.time() if ts is None else float(ts)
+        with self._tlock:
+            if fid in self._fill_seen:
+                return False
+            self._fill_seen.add(fid)
+            self._fill_tape.append((str(venue), delta, fid, now))
+            if len(self._fill_tape) > 4000:
+                cutoff = now - 3600.0
+                self._fill_tape = [e for e in self._fill_tape if e[3] >= cutoff]
+                self._fill_seen = {e[2] for e in self._fill_tape}
+        self._notify()
+        return True
+
+    def signed_fills_since(self, venue: str, since_ts: float) -> float:
+        """自 since_ts 起该品种成交的带符号数量合计（本机收到时间）。"""
+        key = str(venue)
+        start = float(since_ts)
+        with self._tlock:
+            return float(sum(d for v, d, _fid, ts in self._fill_tape if v == key and ts >= start))
 
     async def snapshot(self) -> Dict[str, AccountSnap]:
         async with self._lock:
@@ -557,6 +630,64 @@ def parse_popdex_positions_map(message: Any) -> Dict[str, float]:
         direction = str(row.get("positionSide") or row.get("side") or "").lower()
         signed = -abs(size) if direction in ("short", "sell") else abs(size)
         out[market] = 0.0 if abs(signed) < 1e-18 else float(signed)
+    return out
+
+
+def parse_popdex_fills(message: Any) -> list:
+    """WSS topic=fill：拆成 [{symbol, signed, fill_id}, ...]。snapshot 不入（历史单）。"""
+    if not isinstance(message, dict):
+        return []
+    action = str(message.get("action") or "").lower()
+    if action == "snapshot":
+        return []
+    data = message.get("data")
+    rows: list = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        nested = data.get("fills") or data.get("fill")
+        if isinstance(nested, list):
+            rows = nested
+        elif isinstance(nested, dict):
+            rows = [nested]
+        else:
+            rows = [data]
+    out: list = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        market = str(row.get("symbol") or row.get("market") or "").strip()
+        if not market:
+            continue
+        qty = _to_float(
+            row.get("fillQty")
+            or row.get("execQty")
+            or row.get("lastFilledQty")
+            or row.get("lastFillQty")
+            or row.get("qty")
+            or row.get("size")
+            or row.get("quantity")
+        )
+        if qty is None or abs(qty) <= 1e-18:
+            continue
+        side = str(
+            row.get("side")
+            or row.get("orderSide")
+            or row.get("positionSide")
+            or ""
+        ).lower()
+        signed = -abs(qty) if side in ("sell", "short") else abs(qty)
+        fid = str(
+            row.get("execId")
+            or row.get("fillId")
+            or row.get("tradeId")
+            or row.get("id")
+            or ""
+        ).strip()
+        if not fid:
+            oid = str(row.get("orderId") or row.get("order_id") or "")
+            fid = f"{market}:{oid}:{signed}:{row.get('execTime') or row.get('ts') or i}"
+        out.append({"symbol": market, "signed": float(signed), "fill_id": fid})
     return out
 
 

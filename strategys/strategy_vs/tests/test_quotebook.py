@@ -15,6 +15,7 @@ for _p in (str(STRATEGY_DIR), str(REPO_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from accounts import ThreadWake  # noqa: E402
 from feeds import Quote, QuoteBook  # noqa: E402
 
 
@@ -154,6 +155,19 @@ def test_error_update_keeps_last_bbo():
     bid, ask, err = run(main())
     assert bid == 100.0 and ask == 100.1
     assert "close frame" in err
+
+
+def test_update_pings_thread_wake():
+    async def main():
+        book = QuoteBook()
+        wake = ThreadWake()
+        book.set_thread_wake(wake)
+        await book.update(q())
+        assert wake.wait(0.0) is True
+        await book.touch("a:BTC", time.time())
+        assert wake.wait(0.0) is True
+
+    run(main())
 
 
 if __name__ == "__main__":

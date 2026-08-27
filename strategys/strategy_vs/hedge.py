@@ -16,6 +16,7 @@ _DIR = Path(__file__).resolve().parent
 if str(_DIR) not in sys.path:
     sys.path.insert(0, str(_DIR))
 
+from accounts import ThreadWake
 from ledger import PositionLedger
 
 
@@ -217,6 +218,13 @@ def _cancel(adapter: Any, order_id: str, symbol: str = "") -> None:
         pass
 
 
+def ahead_pos(wss: Decimal, from_fill: Decimal, side: str) -> Decimal:
+    """持仓频道和成交推送哪个更沿本层方向，用哪个。买取较大，卖取较小。"""
+    if side == "buy":
+        return wss if wss >= from_fill else from_fill
+    return wss if wss <= from_fill else from_fill
+
+
 def layer_finish_kind(
     *,
     want_n: int,
@@ -318,6 +326,9 @@ class DualLegBroker:
         pos_apply: Optional[Callable[[str, float], Any]] = None,
         bbo_lookup: Optional[Callable[[], tuple[Optional[Decimal], Optional[Decimal]]]] = None,
         rest_ok: Optional[Callable[[], bool]] = None,
+        fill_since: Optional[Callable[[float], Decimal]] = None,
+        hedge_cooldown_sec: float = 1.0,
+        wake: Optional[ThreadWake] = None,
     ) -> None:
         self.adapter_a = adapter_a
         self.adapter_b = adapter_b
@@ -334,7 +345,10 @@ class DualLegBroker:
         self._pos_apply = pos_apply
         self._bbo_lookup = bbo_lookup
         self._rest_ok = rest_ok
+        self._fill_since = fill_since
+        self.hedge_cooldown_sec = max(0.0, float(hedge_cooldown_sec))
         self.qty_per_layer: float = 0.0
+        self._wake = wake
         self._stop = threading.Event()
         self._working_lock = threading.Lock()
         self._working_oid = ""
@@ -395,11 +409,24 @@ class DualLegBroker:
     def request_stop(self) -> None:
         """Ctrl+C：停循环并撤掉本对正在挂的 B 单。"""
         self._stop.set()
+        wake = self._wake
+        if wake is not None:
+            wake.ping()
         oid = ""
         with self._working_lock:
             oid = self._working_oid
         if oid:
             _cancel(self.adapter_b, oid, self.symbol_b)
+
+    def _idle(self) -> None:
+        """等下一次仓位/成交/盘口推送；超时仍按 poll_sec 兜底。"""
+        if self._stop.is_set():
+            return
+        wake = self._wake
+        if wake is not None:
+            wake.wait(self.poll_sec)
+        else:
+            time.sleep(self.poll_sec)
 
     def _set_working(self, order_id: str) -> None:
         with self._working_lock:
@@ -425,6 +452,32 @@ class DualLegBroker:
             return signed_pos(adapter, symbol)
         except Exception:
             return Decimal("0")
+
+    def _pos_b_layer(
+        self,
+        before_b: Decimal,
+        signed_b: Decimal,
+        side_b: str,
+        layer_t0: float,
+    ) -> Decimal:
+        """持仓 WSS 与成交推送取更沿本层方向的那个。"""
+        wss = self._pos("b")
+        extra = Decimal("0")
+        if self._fill_since is not None:
+            try:
+                extra = _d(self._fill_since(layer_t0))
+            except Exception:
+                extra = Decimal("0")
+        if extra == 0:
+            return wss
+        target = before_b + signed_b
+        from_fill = before_b + extra
+        if side_b == "buy":
+            if from_fill > target:
+                from_fill = target
+        elif from_fill < target:
+            from_fill = target
+        return ahead_pos(wss, from_fill, side_b)
 
     def _credit_a(self, side: str, qty: Decimal) -> None:
         if self._pos_apply is None or qty <= 0:
@@ -490,16 +543,18 @@ class DualLegBroker:
         allow_rest = rest_ok if rest_ok is not None else self._rest_ok
         last_taker = 0.0
         last_align_ts = 0.0          # A 上次下单时间，冷却 hedge_cooldown_sec
-        hedge_cooldown_sec = 5.0
+        hedge_cooldown_sec = self.hedge_cooldown_sec
         yield_exec = False
         inband_since = 0.0
+        layer_t0 = time.time() - 0.05
+        last_b_src = ""
 
         try:
             while time.time() < deadline:
                 if self._stop.is_set():
                     result.logs.append("进程退出，停止挂单")
                     break
-                pos_b = self._pos("b")
+                pos_b = self._pos_b_layer(before_b, signed_b, side_b, layer_t0)
                 # A 绝对对齐：target_a = -pos_b（两腿反号等量）
                 # 用 -pos_b 而不是固定 target_a，这样 B 部分成交时 A 也跟着变
                 cur_target_a = -pos_b
@@ -507,6 +562,14 @@ class DualLegBroker:
                 gap_a = cur_target_a - pos_a
                 snap_a.after = pos_a
                 snap_b.after = pos_b
+                wss_b = self._pos("b")
+                if pos_b != wss_b:
+                    tag = f"{pos_b}"
+                    if tag != last_b_src:
+                        result.logs.append(
+                            f"B仓 持仓={wss_b:+.8f} 成交侧={pos_b:+.8f} 先到先用"
+                        )
+                        last_b_src = tag
 
                 a_aligned = abs(gap_a) <= tol
                 b_done = abs(pos_b - (before_b + signed_b)) <= tol
@@ -558,7 +621,7 @@ class DualLegBroker:
                 # B 挂单逻辑（B 已齐时跳过）
                 remain = abs(before_b + signed_b - pos_b)
                 if remain <= tol:
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
 
                 if self.b_maker and allow_rest is not None and not allow_rest():
@@ -578,12 +641,12 @@ class DualLegBroker:
                         result.logs.append("价差未出带，未挂让出")
                         yield_exec = True
                         break
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
                 inband_since = 0.0
                 if not self.b_maker:
                     if time.time() - last_taker < 0.4:
-                        time.sleep(self.poll_sec)
+                        self._idle()
                         continue
                     last_taker = time.time()
                     order, err = _place_taker(
@@ -602,20 +665,20 @@ class DualLegBroker:
                         if rejects >= self.max_rejects:
                             result.error = "B 市价多次失败"
                             break
-                        time.sleep(self.poll_sec)
+                        self._idle()
                         continue
                     rejects = 0
                     oid = str(getattr(order, "order_id", "") or "")
                     snap_b.order_id = oid or snap_b.order_id
                     result.logs.append(f"B {side_b} 市价 remain={remain} id={oid}")
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
 
                 bid, ask = self._quotes_b()
                 if bid is None or ask is None:
                     if not result.logs or result.logs[-1] != "B 盘口空，等待":
                         result.logs.append("B 盘口空，等待")
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
                 touch = _touch(
                     side_b,
@@ -625,7 +688,7 @@ class DualLegBroker:
                     quote_inc=self._load_b_filters()["quote_inc"],
                 )
                 if touch is None or touch <= 0:
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
 
                 if order_id and our_px is not None and _should_chase(side_b, our_px, bid, ask):
@@ -641,7 +704,7 @@ class DualLegBroker:
                     continue
 
                 if order_id:
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
 
                 place_qty = self._fit_b_qty(remain)
@@ -679,7 +742,7 @@ class DualLegBroker:
                     if rejects >= self.max_rejects:
                         result.error = "B 挂单多次失败"
                         break
-                    time.sleep(self.poll_sec)
+                    self._idle()
                     continue
                 rejects = 0
                 order_id = str(getattr(order, "order_id", "") or "")
@@ -690,14 +753,18 @@ class DualLegBroker:
                     f"B {side_b} Maker {touch} remain={remain} "
                     f"pos_b={pos_b:+.8f} id={order_id}"
                 )
-                time.sleep(self.poll_sec)
+                self._idle()
         finally:
             if order_id:
                 _cancel(self.adapter_b, order_id, self.symbol_b)
             self._set_working("")
 
         # 收尾：B 有增量才再对齐 A（B 没动则不因假 0 去打 Lighter）
-        pos_b = self._pos("b")
+        pos_b = self._pos_b_layer(before_b, signed_b, side_b, layer_t0)
+        try:
+            pos_b = ahead_pos(self._pos_exchange("b"), pos_b, side_b)
+        except Exception:
+            pass
         pos_a = self._pos("a")
         snap_a.after = pos_a
         snap_b.after = pos_b
@@ -708,8 +775,12 @@ class DualLegBroker:
         if b_moved and not self._stop.is_set():
             self._align_a(-pos_b, result, label="收尾对冲")
 
-        pos_a = self._pos_exchange("a")
-        pos_b = self._pos_exchange("b")
+        pos_a = self._pos("a")
+        pos_b = self._pos_b_layer(before_b, signed_b, side_b, layer_t0)
+        try:
+            pos_b = ahead_pos(self._pos_exchange("b"), pos_b, side_b)
+        except Exception:
+            pass
         snap_a.after = pos_a
         snap_b.after = pos_b
         hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b))
