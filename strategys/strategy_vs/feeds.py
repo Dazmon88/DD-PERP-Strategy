@@ -376,19 +376,15 @@ async def _push_account_rest(
     adapter: Any,
     accounts: AccountBook,
 ) -> None:
-    """账户 REST：余额一次、持仓一次，再按品种拆到 venue:symbol。"""
+    """账户 REST：余额先落盘，持仓失败不能把净值一起丢掉。"""
     wanted = [str(s).strip() for s in symbols if str(s).strip()]
     if not wanted:
         return
     balance = await asyncio.wait_for(
         asyncio.to_thread(adapter.get_balance),
-        timeout=8.0,
+        timeout=15.0,
     )
-    positions = await asyncio.wait_for(
-        asyncio.to_thread(adapter.get_positions, None),
-        timeout=8.0,
-    )
-    parsed0 = from_adapter_balance(balance, positions, wanted[0])
+    parsed0 = from_adapter_balance(balance, None, wanted[0])
     now = time.time()
     await accounts.patch(
         AccountSnap(
@@ -399,6 +395,14 @@ async def _push_account_rest(
             ts=now,
         )
     )
+    positions = []
+    try:
+        positions = await asyncio.wait_for(
+            asyncio.to_thread(adapter.get_positions, None),
+            timeout=15.0,
+        )
+    except Exception:
+        return
     for symbol in wanted:
         parsed = from_adapter_balance(balance, positions, symbol)
         await accounts.patch(
@@ -506,7 +510,12 @@ async def _run_lighter(
     rest_interval = float(venue_cfg.get("rest_interval_sec", 1.0))
     loop = asyncio.get_running_loop()
     delay = 1.0
-    account_index = int(getattr(adapter, "account_index", 0) or 0)
+    has_auth = _lighter_authed(adapter)
+    raw_idx = getattr(adapter, "account_index", None)
+    try:
+        account_index = int(raw_idx) if raw_idx is not None else 0
+    except (TypeError, ValueError):
+        account_index = 0
     rest_task: Optional[asyncio.Task] = None
     book_rest_task: Optional[asyncio.Task] = None
     if accounts is not None:
@@ -518,7 +527,7 @@ async def _run_lighter(
                 adapter=adapter,
                 accounts=accounts,
                 stop=stop,
-                has_auth=True,
+                has_auth=has_auth,
             )
         )
 
@@ -710,7 +719,7 @@ async def _run_lighter(
                     "order_book_symbols": list(symbols),
                     "on_order_book_update": on_order_book_update,
                 }
-                if accounts is not None:
+                if accounts is not None and has_auth:
                     ws_kwargs.update(
                         account_ids=[account_index],
                         user_stats_ids=[account_index],
@@ -1329,6 +1338,15 @@ async def _run_popdex(
             rest_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await rest_task
+
+
+def _lighter_authed(adapter: Any) -> bool:
+    """index 0 是 Lighter/RH 协议金库，不能当作用户账户。"""
+    raw = getattr(adapter, "account_index", None)
+    try:
+        return raw is not None and int(raw) != 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _hype_authed(adapter: Any) -> bool:

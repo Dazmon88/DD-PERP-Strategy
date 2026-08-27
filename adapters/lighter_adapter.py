@@ -97,12 +97,12 @@ class LighterAdapter(BasePerpAdapter):
         else:
             self.chain_id = int(profile.chain_id)
 
-        self.account_index = config.get("account_index")
-        if self.account_index is None:
-            # 公共行情 / 只读 WSS 可不配账户
-            self.account_index = 0
+        raw_idx = config.get("account_index")
+        if raw_idx is None or (isinstance(raw_idx, str) and not str(raw_idx).strip()):
+            # 公共行情可不配。0 是 Lighter/RH 协议账户，禁止当作用户默认值。
+            self.account_index = None
         else:
-            self.account_index = int(self.account_index)
+            self.account_index = int(raw_idx)
 
         self.market_type = str(config.get("market_type", "perp")).lower()
         self.auth_expiry_sec = int(config.get("auth_expiry_sec", 600))
@@ -127,7 +127,7 @@ class LighterAdapter(BasePerpAdapter):
         self._init_api_clients()
 
         self.signer_client: Optional[lighter.SignerClient] = None
-        if api_private_keys:
+        if api_private_keys and self.account_index:
             def _build_signer():
                 self.signer_client = lighter.SignerClient(
                     url=self.base_url,
@@ -557,7 +557,9 @@ class LighterAdapter(BasePerpAdapter):
 
 
     def get_balance(self) -> Balance:
-        """查询账户余额"""
+        """查询账户余额。account_index 未配或为 0 时拒绝，避免读到协议账户。"""
+        if not self.account_index:
+            raise Exception("未配置 account_index（0 是协议账户）")
         response = self._run_async(self.account_api.account(by="index", value=str(self.account_index)))
         if not response.accounts:
             raise Exception("未找到账户信息")
@@ -581,6 +583,8 @@ class LighterAdapter(BasePerpAdapter):
 
     async def get_balance_async(self) -> Balance:
         """查询账户余额（异步版本，避免跨 event loop 调用）"""
+        if not self.account_index:
+            raise Exception("未配置 account_index（0 是协议账户）")
         response = await self.account_api.account(by="index", value=str(self.account_index))
         if not response.accounts:
             raise Exception("未找到账户信息")
@@ -604,6 +608,8 @@ class LighterAdapter(BasePerpAdapter):
 
     def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
         """查询持仓信息"""
+        if not self.account_index:
+            return []
         response = self._run_async(self.account_api.account(by="index", value=str(self.account_index)))
         if not response.accounts:
             return []
@@ -641,6 +647,8 @@ class LighterAdapter(BasePerpAdapter):
 
     async def get_positions_async(self, symbol: Optional[str] = None) -> List[Position]:
         """查询持仓信息（异步版本，避免跨 event loop 调用）"""
+        if not self.account_index:
+            return []
         response = await self.account_api.account(by="index", value=str(self.account_index))
         if not response.accounts:
             return []

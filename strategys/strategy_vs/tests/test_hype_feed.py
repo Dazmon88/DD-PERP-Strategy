@@ -167,7 +167,17 @@ def test_info_survives_sparse_spot_token_index():
     assert info.asset_to_sz_decimals[10000] == 2
 
 
-def test_unified_mode_detect():
+def test_lighter_authed_rejects_protocol_account():
+    from feeds import _lighter_authed
+
+    class A:
+        def __init__(self, idx):
+            self.account_index = idx
+
+    assert not _lighter_authed(A(None))
+    assert not _lighter_authed(A(0))
+    assert not _lighter_authed(A("0"))
+    assert _lighter_authed(A(281474976710463))
     assert is_hype_unified("unifiedAccount")
     assert is_hype_unified('"portfolioMargin"')
     assert not is_hype_unified("disabled")
