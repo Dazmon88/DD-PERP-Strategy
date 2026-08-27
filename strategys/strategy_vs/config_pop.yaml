@@ -24,11 +24,18 @@ vs:
   account_rest_sec: 30       # 账户 REST 兜底间隔；WSS 新鲜时不拉
   account_stale_sec: 15      # 账户 WSS 超过此时长未更新才用 REST
   grid:
-    fee_mult: 1.2            # 来回成本的安全系数；带宽至少 C×1.3
+    fee_mult: 1.3            # 来回成本的安全系数；带宽至少 C×fee_mult
     q_lo: 10                 # 样本宽度用 p10～p90，比手续费更宽则用样本
     q_hi: 90
-    max_lots: 5              # 同一方向最多层数
+    max_lots: 2              # 同一方向最多层数；CSV 行覆盖此值
     step: 0.0001             # 加/减仓价差间隔（0.01%）
+  flatten:
+    funding_hours_utc: [0, 8, 16]  # 资金费时点；前后只减不开
+    minutes_before: 20
+    minutes_after: 10
+    quiet_hours_local:             # 本机时区夜间不扛仓（23:00–08:00）
+      start: 23
+      end: 8
   ledger:
     qty: 0.1
     fill_delay_sec: 0        # 模拟立刻成交，方便对照 CSV
@@ -38,9 +45,9 @@ vs:
     pos_tolerance: 0.0000001
     reconcile_interval_sec: 2
   window:
-    # 采样跟随 WSS 推送，不再是固定 2 次/秒。顶栏「盘口 N/秒 窗口≈X」
-    # 显示实测速率和窗口覆盖时长，按它调 max_samples 到想要的历史长度。
-    min_samples: 500        # 样本达到此数后才算上下沿
+    # 采样按时间节流，不跟 WSS 每跳都进 FIFO，否则 3 万条只有几分钟噪声。
+    sample_interval_sec: 0.5 # 同一窗口最少间隔；0.5s × 30000 ≈ 4.2 小时
+    min_samples: 500        # 样本达到此数后才算上下沿（约 4 分钟）
     max_samples: 30000       # FIFO 容量；满了挤掉最旧（>60000 时重算会卡顿）
     percentile: [10, 20, 80, 90] # 展示分位，可写 90 或 [20, 80]
     persist: true            # 落盘，重启接着用

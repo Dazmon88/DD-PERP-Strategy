@@ -61,17 +61,31 @@ def p_label(q: float) -> str:
 
 
 class SpreadWindow:
-    """按条数 FIFO 的净收益率样本。满了挤掉最旧一条，可落盘重启接着用。"""
+    """按条数 FIFO 的净收益率样本。满了挤掉最旧一条，可落盘重启接着用。
 
-    def __init__(self, maxlen: int, percentile: Any = 90.0) -> None:
+    min_interval_sec>0 时按时间节流：同一间隔内只留一条，窗口覆盖时长
+    ≈ max_samples × interval，而不是「WSS 每跳一条」。
+    """
+
+    def __init__(
+        self,
+        maxlen: int,
+        percentile: Any = 90.0,
+        min_interval_sec: float = 0.0,
+    ) -> None:
         self.maxlen = max(1, int(maxlen))
         self.percentiles = parse_percentiles(percentile)
         self.percentile = self.percentiles[-1]
+        self.min_interval_sec = max(0.0, float(min_interval_sec or 0.0))
         self._samples: Deque[Tuple[float, float]] = deque(maxlen=self.maxlen)
         self.dirty = False
 
     def add(self, pct: float, now: Optional[float] = None) -> None:
         now = time.time() if now is None else now
+        if self.min_interval_sec > 0 and self._samples:
+            last_ts, _ = self._samples[-1]
+            if now - last_ts < self.min_interval_sec:
+                return
         self._samples.append((now, float(pct)))
         self.dirty = True
 
@@ -109,13 +123,70 @@ class SpreadWindow:
     def load(self, samples: Iterable[Iterable[float]]) -> int:
         self._samples.clear()
         rows = [row for row in samples if isinstance(row, (list, tuple)) and len(row) >= 2]
-        for row in rows[-self.maxlen :]:
+        parsed: List[Tuple[float, float]] = []
+        for row in rows:
             try:
-                self._samples.append((float(row[0]), float(row[1])))
+                parsed.append((float(row[0]), float(row[1])))
             except (TypeError, ValueError):
                 continue
+        if self.min_interval_sec > 0:
+            thinned: List[Tuple[float, float]] = []
+            last_ts: Optional[float] = None
+            for ts, pct in parsed:
+                if last_ts is not None and ts - last_ts < self.min_interval_sec:
+                    continue
+                thinned.append((ts, pct))
+                last_ts = ts
+            parsed = thinned
+        for ts, pct in parsed[-self.maxlen :]:
+            self._samples.append((ts, pct))
         self.dirty = False
         return len(self._samples)
+
+
+def _in_circular_range(value: int, start: int, end: int, period: int = 1440) -> bool:
+    """半开区间 [start, end)，可跨周期（如 23:40–00:10）。start==end 视为关。"""
+    if period <= 0 or start == end:
+        return False
+    value %= period
+    start %= period
+    end %= period
+    if start < end:
+        return start <= value < end
+    return value >= start or value < end
+
+
+def flatten_block_reason(raw: Any, now: Optional[float] = None) -> str:
+    """资金费前后 / 本地静默时段：只减仓、不开不加不反向。未配置则空串。"""
+    if not raw or not isinstance(raw, dict):
+        return ""
+    now = time.time() if now is None else float(now)
+    ut = time.gmtime(now)
+    lt = time.localtime(now)
+    minute_utc = ut.tm_hour * 60 + ut.tm_min
+    hours = raw.get("funding_hours_utc")
+    if hours:
+        before = max(0, int(raw.get("minutes_before", 20)))
+        after = max(0, int(raw.get("minutes_after", 10)))
+        for hour in hours:
+            try:
+                h = int(hour)
+            except (TypeError, ValueError):
+                continue
+            start = h * 60 - before
+            end = h * 60 + after
+            if _in_circular_range(minute_utc, start, end):
+                return f"资金费{h:02d}:00UTC前后只平"
+    quiet = raw.get("quiet_hours_local") or {}
+    if isinstance(quiet, dict) and quiet:
+        try:
+            start_h = int(quiet.get("start"))
+            end_h = int(quiet.get("end"))
+        except (TypeError, ValueError):
+            start_h = end_h = 0
+        if start_h != end_h and _in_circular_range(lt.tm_hour, start_h, end_h, 24):
+            return f"静默{start_h:02d}-{end_h:02d}只平"
+    return ""
 
 
 def _percentile_sorted(ordered: List[float], pct: float) -> float:

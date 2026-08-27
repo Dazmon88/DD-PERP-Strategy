@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
@@ -128,6 +129,9 @@ def normalize_popdex_symbol(symbol: str) -> str:
 
 class PopDEXAdapter(BasePerpAdapter):
     """PopDEX 交易所适配器"""
+
+    # 链上 Agent 交易共用一把锁：place/cancel 不能并行，否则毫秒 nonce 撞车
+    _agent_lock = threading.RLock()
 
     def __init__(self, config: Dict[str, Any]):
         """
@@ -398,22 +402,23 @@ class PopDEXAdapter(BasePerpAdapter):
             tif = "postonly"
         try:
             symbol_id, symbol_name = self._resolve_symbol_id(symbol)
-            result = self.http_client.place_order_onchain(
-                wallet_id=wallet_id,
-                agent_private_key=agent_key,
-                symbol_id=symbol_id,
-                price=price if price is not None else 0,
-                qty=quantity,
-                side=side_str,
-                order_type=order_type,
-                time_in_force=tif,
-                category=self.category,
-                reduce_only=reduce_only,
-                position_side=str(kwargs.get("position_side") or "none"),
-                slippage=kwargs.get("slippage", 0),
-                client_order_id=client_order_id,
-                network=self.network,
-            )
+            with self._agent_lock:
+                result = self.http_client.place_order_onchain(
+                    wallet_id=wallet_id,
+                    agent_private_key=agent_key,
+                    symbol_id=symbol_id,
+                    price=price if price is not None else 0,
+                    qty=quantity,
+                    side=side_str,
+                    order_type=order_type,
+                    time_in_force=tif,
+                    category=self.category,
+                    reduce_only=reduce_only,
+                    position_side=str(kwargs.get("position_side") or "none"),
+                    slippage=kwargs.get("slippage", 0),
+                    client_order_id=client_order_id,
+                    network=self.network,
+                )
             encoded = result.get("encoded") or {}
             cl_oid_hex = encoded.get("client_order_id")
             cl_oid = client_oid_text(cl_oid_hex) if cl_oid_hex else None
@@ -479,13 +484,14 @@ class PopDEXAdapter(BasePerpAdapter):
         if not order_id and not client_order_id:
             raise ValueError("必须提供 order_id 或 client_order_id")
         try:
-            self.http_client.cancel_order_onchain(
-                wallet_id=wallet_id,
-                agent_private_key=agent_key,
-                order_id=order_id,
-                client_order_id=client_order_id,
-                network=self.network,
-            )
+            with self._agent_lock:
+                self.http_client.cancel_order_onchain(
+                    wallet_id=wallet_id,
+                    agent_private_key=agent_key,
+                    order_id=order_id,
+                    client_order_id=client_order_id,
+                    network=self.network,
+                )
             return True
         except Exception as e:
             raise Exception(f"撤单失败: {e}") from e

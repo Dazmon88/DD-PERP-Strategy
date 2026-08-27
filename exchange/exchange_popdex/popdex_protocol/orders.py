@@ -7,6 +7,7 @@ PopDEX 链上下单编解码
 """
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from decimal import Decimal, ROUND_DOWN
@@ -18,6 +19,20 @@ from eth_account.signers.local import LocalAccount
 from eth_utils import function_signature_to_4byte_selector, to_checksum_address
 
 from .perps_auth import EIP712_DOMAINS, Network
+
+_nonce_lock = threading.Lock()
+_last_agent_nonce = 0
+
+
+def next_agent_nonce() -> int:
+    """Agent 时间戳 nonce（毫秒）。同毫秒并发会撞 Invalid nonce，这里单调递增。"""
+    global _last_agent_nonce
+    with _nonce_lock:
+        n = int(time.time() * 1000)
+        if n <= _last_agent_nonce:
+            n = _last_agent_nonce + 1
+        _last_agent_nonce = n
+        return n
 
 ORDER_PRECOMPILE = "0x0000000000000000000000000000000000001000"
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -270,7 +285,7 @@ def build_agent_tx(
     if chain_id is None:
         chain_id = int(EIP712_DOMAINS[network]["chainId"])
     if nonce is None:
-        nonce = int(time.time() * 1000)
+        nonce = next_agent_nonce()
 
     tx = {
         "chainId": chain_id,

@@ -59,6 +59,7 @@ from spread import (  # noqa: E402
     GridTick,
     SpreadGrid,
     SpreadWindow,
+    flatten_block_reason,
     load_windows,
     snapshot_windows,
     write_snapshot,
@@ -320,18 +321,35 @@ def _write_snapshot_quiet(path, payload) -> None:
         write_snapshot(path, payload)
 
 
-def _feed_rate_tag(rate: Optional[float], max_samples: int) -> str:
-    """推送速率 + 窗口满时覆盖多长时间，方便据此调 max_samples。"""
-    if not rate or rate <= 0:
+def _feed_rate_tag(
+    rate: Optional[float],
+    max_samples: int,
+    sample_interval: float = 0.0,
+) -> str:
+    """推送速率 + 窗口满时覆盖多长时间。有采样间隔时按时间算，不跟 WSS 跳数。"""
+    if sample_interval and sample_interval > 0:
+        secs = max_samples * sample_interval
+        src = f"采样每{sample_interval:g}s"
+    elif rate and rate > 0:
+        secs = max_samples / rate
+        src = f"盘口 {rate:.0f}/秒"
+    else:
         return "盘口 测速中"
-    secs = max_samples / rate
     if secs >= 3600:
         span = f"{secs / 3600:.1f}小时"
     elif secs >= 60:
         span = f"{secs / 60:.0f}分钟"
     else:
         span = f"{secs:.0f}秒"
-    return f"盘口 {rate:.0f}/秒  窗口≈{span}"
+    if sample_interval and sample_interval > 0 and rate and rate > 0:
+        return f"盘口 {rate:.0f}/秒  {src}  窗口≈{span}"
+    if sample_interval and sample_interval > 0:
+        return f"{src}  窗口≈{span}"
+    return f"{src}  窗口≈{span}"
+
+
+def _window_interval(win_cfg: Dict[str, Any]) -> float:
+    return max(0.0, float(win_cfg.get("sample_interval_sec", 0) or 0))
 
 
 class _Rate:
@@ -507,7 +525,7 @@ def _settle_layer(rt: PairRuntime, runlog: RunLog) -> None:
     if result is not None:
         note = str(getattr(result, "note", "") or "")
         err = str(getattr(result, "error", "") or "") or err
-        if err and not getattr(result, "ok", False):
+        if not note:
             note = err
         logs = list(getattr(result, "logs", None) or [])
         if not getattr(result, "ok", False):
@@ -532,7 +550,9 @@ def _settle_layer(rt: PairRuntime, runlog: RunLog) -> None:
     if rt.pending_log is not None and "让出执行" in note:
         rt.last_layer = note
         runlog.line(f"让出 {note}", pair=rt.spec.name)
-    elif rt.pending_log is not None and (ok or b_moved):
+    elif rt.pending_log is not None and (
+        ok or b_moved or bool(getattr(result, "flattened", False))
+    ):
         extra_note = str(rt.pending_log.pop("note", "") or "")
         if extra_note and note:
             note = f"{extra_note} {note}"
@@ -1022,18 +1042,21 @@ def _render_multi_board(
     stale_ms = int(vs_cfg.get("stale_ms", 2000))
     win_cfg = vs_cfg.get("window") or {}
     min_samples, max_samples = _window_sizes(win_cfg)
+    sample_interval = _window_interval(win_cfg)
     a_name = _short(str(venues["a"].get("name") or venues["a"].get("exchange")))
     b_name = _short(str(venues["b"].get("name") or venues["b"].get("exchange")))
     sa = accounts.get("a")
     sb = accounts.get("b")
     now = time.strftime("%H:%M:%S")
     running = [rt.spec.name for rt in runtimes if _pair_busy(rt)]
-    busy = f"执行 {','.join(running)}" if running else "各对独立"
+    busy = f"执行 {','.join(running)}" if running else ("B所串行" if live else "各对独立")
     min_avail = float(vs_cfg.get("min_available", 40))
     margin_reason = _margin_block_reason(sa, sb, min_avail)
-    allow_open = not margin_reason
-    if margin_reason:
-        busy = f"{busy}  {_c('1;33', '风控 ' + margin_reason)}"
+    flatten_reason = flatten_block_reason(vs_cfg.get("flatten"))
+    block_reason = margin_reason or flatten_reason
+    allow_open = not block_reason
+    if block_reason:
+        busy = f"{busy}  {_c('1;33', '风控 ' + block_reason)}"
     tot: Dict[str, Optional[float]] = {}
     if pnl is not None:
         tot = pnl.snapshot(
@@ -1049,7 +1072,7 @@ def _render_multi_board(
     head = [
         f"{_c('1', a_name)} vs {_c('1', b_name)}   {_c('2', now)}   "
         f"{len(runtimes)}对   {busy}   "
-        f"{'真单' if live else '模拟'}   {_c('2', _feed_rate_tag(rate, max_samples))}",
+        f"{'真单' if live else '模拟'}   {_c('2', _feed_rate_tag(rate, max_samples, sample_interval))}",
         _c("2", f"{_pad('所', 6, '<')} {_pad('净值$', w_money)} {_pad('可用$', w_money)} "
                 f"{_pad('盈亏$', w_money)}  账户源"),
         f"{_pad(a_name, 6, '<')} {_pad(_fmt_money(sa.equity if sa else None), w_money)} "
@@ -1374,7 +1397,10 @@ def _render(
     min_avail = float(vs_cfg.get("min_available", 40))
     sa_m = accounts.get("a") if accounts else None
     sb_m = accounts.get("b") if accounts else None
-    allow_open = not _margin_block_reason(sa_m, sb_m, min_avail)
+    allow_open = not (
+        _margin_block_reason(sa_m, sb_m, min_avail)
+        or flatten_block_reason(vs_cfg.get("flatten"))
+    )
     delta = _order_delta(
         tick, ledger, quotes_ok=quotes_ok, hedge_busy=hedge_busy, allow_open=allow_open
     )
@@ -1545,6 +1571,7 @@ async def _print_loop(
     interval = float(vs_cfg.get("print_interval_sec", 0.5))
     win_cfg = vs_cfg.get("window") or {}
     min_samples, maxlen = _window_sizes(win_cfg)
+    sample_interval = _window_interval(win_cfg)
     persist_on = bool(win_cfg.get("persist", True))
     save_interval = float(win_cfg.get("save_interval_sec", 5))
     gcfg = _grid_cfg(vs_cfg)
@@ -1569,7 +1596,7 @@ async def _print_loop(
             f"真单已开 对={names} timeout={lcfg['timeout_sec']:g}s "
             f"B {'Maker' if b_maker else '市价'}/A 市价  "
             f"{_fee_tag(venues['a'])} / {_fee_tag(venues['b'])}  "
-            f"所级 WSS/账户各一次  每对独立挂单  断线/失败只平"
+            f"所级 WSS/账户各一次  B所串行下单  断线/失败只平"
         )
         runlog.line(
             f"真单 对={names} timeout={lcfg['timeout_sec']:g}s "
@@ -1582,10 +1609,12 @@ async def _print_loop(
             "ab": SpreadWindow(
                 maxlen=maxlen,
                 percentile=win_cfg.get("percentile", 90),
+                min_interval_sec=sample_interval,
             ),
             "ba": SpreadWindow(
                 maxlen=maxlen,
                 percentile=win_cfg.get("percentile", 90),
+                min_interval_sec=sample_interval,
             ),
         }
         grid = SpreadGrid(
@@ -1715,12 +1744,14 @@ async def _print_loop(
             margin_reason = _margin_block_reason(
                 acct.get("a"), acct.get("b"), min_avail
             )
-            if margin_reason != last_margin:
-                if margin_reason:
-                    runlog.line(f"风控 {margin_reason}")
+            flatten_reason = flatten_block_reason(vs_cfg.get("flatten"), now)
+            block_reason = margin_reason or flatten_reason
+            if block_reason != last_margin:
+                if block_reason:
+                    runlog.line(f"风控 {block_reason}")
                 else:
                     runlog.line("风控 可用恢复可开仓")
-                last_margin = margin_reason
+                last_margin = block_reason
 
             if live and now - last_align_any >= align_cooldown:
                 for rt in runtimes:
@@ -1799,10 +1830,16 @@ async def _print_loop(
                     rt.ledger,
                     quotes_ok=quotes_ok,
                     hedge_busy=False,
-                    allow_open=not margin_reason,
+                    allow_open=not block_reason,
                 )
                 if want:
                     pending.append((rt, tick, want))
+            if live:
+                if any(_pair_busy(rt) for rt in runtimes):
+                    pending = []
+                elif len(pending) > 1:
+                    pending.sort(key=lambda item: -_signal_score(item[1], item[2]))
+                    pending = pending[:1]
             # 判定每次 WSS 推送都跑；重绘仍按 print_interval_sec 节流
             text = None
             if now - last_print >= interval:

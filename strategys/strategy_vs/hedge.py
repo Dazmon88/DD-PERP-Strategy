@@ -217,6 +217,21 @@ def _cancel(adapter: Any, order_id: str, symbol: str = "") -> None:
         pass
 
 
+def layer_finish_kind(
+    *,
+    want_n: int,
+    got_n: Optional[int],
+    hedged: bool,
+    b_moved: bool,
+) -> str:
+    """一层收尾：齐则认领；B 动过但不齐则市价拧回层前，绝不认领成反向。"""
+    if hedged and got_n == want_n:
+        return "ok"
+    if b_moved:
+        return "unwind"
+    return "abort"
+
+
 @dataclass
 class LegSnap:
     venue: str
@@ -401,9 +416,15 @@ class DualLegBroker:
             got = self._pos_lookup(which)
             if got is not None:
                 return _d(got)
+        return self._pos_exchange(which)
+
+    def _pos_exchange(self, which: str) -> Decimal:
         adapter = self.adapter_a if which == "a" else self.adapter_b
         symbol = self.symbol_a if which == "a" else self.symbol_b
-        return signed_pos(adapter, symbol)
+        try:
+            return signed_pos(adapter, symbol)
+        except Exception:
+            return Decimal("0")
 
     def _credit_a(self, side: str, qty: Decimal) -> None:
         if self._pos_apply is None or qty <= 0:
@@ -675,41 +696,32 @@ class DualLegBroker:
                 _cancel(self.adapter_b, order_id, self.symbol_b)
             self._set_working("")
 
-        if self._stop.is_set():
-            ledger.abort_layer("进程退出")
-            result.ok = False
-            result.error = ""
-            result.note = "进程退出"
-            result.flattened = False
-            return result
-
-        if yield_exec:
-            ledger.abort_layer("让出执行")
-            result.ok = False
-            result.error = ""
-            result.note = "让出执行"
-            result.flattened = False
-            return result
-
         # 收尾：B 有增量才再对齐 A（B 没动则不因假 0 去打 Lighter）
         pos_b = self._pos("b")
         pos_a = self._pos("a")
-        cur_target_a = -pos_b
         snap_a.after = pos_a
         snap_b.after = pos_b
         result.logs.append(
             f"仓位 A {before_a:+.8f}→{pos_a:+.8f} B {before_b:+.8f}→{pos_b:+.8f}"
         )
-        if abs(pos_b - before_b) > tol:
-            self._align_a(cur_target_a, result, label="收尾对冲")
+        b_moved = abs(pos_b - before_b) > tol
+        if b_moved and not self._stop.is_set():
+            self._align_a(-pos_b, result, label="收尾对冲")
 
-        # 两腿齐：用仓位对齐判断；成功/失败都优先按交易所绝对仓认领，避免账本归零叠仓
-        pos_a = self._pos("a")
+        pos_a = self._pos_exchange("a")
+        pos_b = self._pos_exchange("b")
         snap_a.after = pos_a
+        snap_b.after = pos_b
         hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b))
         want_n = int(round(float(before_a + signed_a) / ledger.qty_per_layer))
         got_n = None if hedge is None else int(round(hedge[0] / ledger.qty_per_layer))
-        if hedge is not None and got_n == want_n:
+        kind = layer_finish_kind(
+            want_n=want_n,
+            got_n=got_n,
+            hedged=hedge is not None,
+            b_moved=b_moved or abs(pos_b - before_b) > tol,
+        )
+        if kind == "ok":
             ledger.adopt_exchange(float(pos_a), float(pos_b), note="两腿成交")
             result.ok = True
             result.note = "两腿成交"
@@ -720,28 +732,82 @@ class DualLegBroker:
             f"仓不对齐 A {pos_a:+.8f} B {pos_b:+.8f} 期望层 {want_n:+d} 实层 {got_n}"
         )
         result.error = result.error or "一层未齐"
-        # 对锁则认领真实仓，绝不 abort 成 0（否则网格会当空仓反复开）
-        if ledger.adopt_exchange(
-            float(pos_a), float(pos_b), note="一层未齐已认领"
-        ):
-            result.note = ledger.note or "一层未齐已认领"
-            result.logs.append(result.note)
+        if self._stop.is_set():
+            ledger.abort_layer("进程退出")
+            result.ok = False
+            result.error = ""
+            result.note = "进程退出"
             result.flattened = False
             return result
-        result.flattened = True
-        ledger.abort_layer("一层未齐")
-        result.note = "一层未齐"
+        if kind == "unwind":
+            result.logs.append("一层未齐，双腿市价拧回层前")
+            self._unwind_to(before_a, before_b, result, tol)
+            pos_a = self._pos_exchange("a")
+            pos_b = self._pos_exchange("b")
+            snap_a.after = pos_a
+            snap_b.after = pos_b
+            ledger.abort_layer("一层未齐已拧平")
+            result.note = "一层未齐已拧平"
+            result.flattened = True
+            result.logs.append(
+                f"拧平后 A {pos_a:+.8f} B {pos_b:+.8f} 账本 lots={ledger.lots}"
+            )
+            return result
+
+        if yield_exec:
+            ledger.abort_layer("让出执行")
+            result.error = ""
+            result.note = "让出执行"
+        else:
+            ledger.abort_layer("一层未齐")
+            result.note = "一层未齐"
+        result.ok = False
+        result.flattened = False
         return result
+
+    def _unwind_to(
+        self,
+        target_a: Decimal,
+        target_b: Decimal,
+        result: LayerResult,
+        tol: Decimal,
+    ) -> None:
+        """一层未齐：两腿市价拧回层前仓，禁止把反向仓认进账本。"""
+        pos_b = self._pos_exchange("b")
+        gap_b = target_b - pos_b
+        if abs(gap_b) > tol:
+            side = "buy" if gap_b > 0 else "sell"
+            qty = self._fit_b_qty(abs(gap_b))
+            if qty > 0:
+                order, err = _place_taker(
+                    self.adapter_b,
+                    symbol=self.symbol_b,
+                    side=side,
+                    qty=qty,
+                    reduce_only=False,
+                )
+                if err:
+                    result.logs.append(f"B 拧平失败 {side} {qty} err={err}")
+                else:
+                    oid = str(getattr(order, "order_id", "") or "")
+                    result.b.order_id = oid or result.b.order_id
+                    result.logs.append(f"B 拧平 {side} {qty} id={oid}")
+                time.sleep(max(self.poll_sec, 0.25))
+        pos_b = self._pos_exchange("b")
+        want_a = target_a if abs(pos_b - target_b) <= tol else -pos_b
+        self._align_a(want_a, result, label="拧平", fresh=True)
 
     def _align_a(
         self,
         target_a: Decimal,
         result: LayerResult,
         label: str = "对冲",
+        *,
+        fresh: bool = False,
     ) -> bool:
         """让 A 仓位对齐到 target_a。返回 True 表示下单成功（或已对齐）。"""
-        pos_a = self._pos("a")
-        pos_b = self._pos("b")
+        pos_a = self._pos_exchange("a") if fresh else self._pos("a")
+        pos_b = self._pos_exchange("b") if fresh else self._pos("b")
         gap = target_a - pos_a
         tol = max(Decimal(str(self.qty_per_layer)) * Decimal("0.05"), Decimal("1e-8"))
         if abs(gap) <= tol:

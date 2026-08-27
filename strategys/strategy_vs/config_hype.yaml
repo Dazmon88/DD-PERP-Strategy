@@ -31,6 +31,7 @@ vs:
     pos_tolerance: 0.0000001
     reconcile_interval_sec: 2
   window:
+    sample_interval_sec: 0.5
     min_samples: 500
     max_samples: 30000
     percentile: [10, 20, 80, 90]
