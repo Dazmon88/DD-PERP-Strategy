@@ -123,10 +123,13 @@ class HypeAdapter(BasePerpAdapter):
             except (TypeError, ValueError):
                 self.timeout = None
 
-        # Info 用于行情 / 账户查询；Exchange 用于带签名的写操作
+        # Info 用于行情 / 账户查询；Exchange 用于带签名的写操作。
+        # 永续不需要现货 meta；传空表跳过一次 HTTP，也避开 token index 稀疏导致的 SDK 崩。
+        _empty_spot = {"universe": [], "tokens": []}
         self.info = Info(
             base_url=self.base_url,
             skip_ws=True,
+            spot_meta=_empty_spot,
             perp_dexs=self.perp_dexs,
             timeout=self.timeout,
         )
@@ -135,6 +138,7 @@ class HypeAdapter(BasePerpAdapter):
                 wallet=self._wallet,
                 base_url=self.base_url,
                 account_address=self.address,
+                spot_meta=_empty_spot,
                 perp_dexs=self.perp_dexs,
                 timeout=self.timeout,
             )

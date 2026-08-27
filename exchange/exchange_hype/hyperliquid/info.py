@@ -39,18 +39,48 @@ class Info(API):
         self.name_to_coin = {}
         self.asset_to_sz_decimals = {}
 
+        # token["index"] 是稳定 id，会留空洞（删币后列表只有 495 项、index 到 800+）。
+        # 按列表下标取会 IndexError，启动 Hype 适配器直接崩。
+        tokens_by_idx: dict = {}
+        for i, tok in enumerate(spot_meta.get("tokens") or []):
+            if not isinstance(tok, dict):
+                continue
+            tokens_by_idx[i] = tok
+            raw = tok.get("index")
+            if raw is None:
+                continue
+            try:
+                tokens_by_idx[int(raw)] = tok
+            except (TypeError, ValueError):
+                continue
+
         # spot assets start at 10000
-        for spot_info in spot_meta["universe"]:
-            asset = spot_info["index"] + 10000
-            self.coin_to_asset[spot_info["name"]] = asset
-            self.name_to_coin[spot_info["name"]] = spot_info["name"]
-            base, quote = spot_info["tokens"]
-            base_info = spot_meta["tokens"][base]
-            quote_info = spot_meta["tokens"][quote]
+        for spot_info in spot_meta.get("universe") or []:
+            try:
+                asset = int(spot_info["index"]) + 10000
+            except (KeyError, TypeError, ValueError):
+                continue
+            coin = spot_info.get("name")
+            if not coin:
+                continue
+            self.coin_to_asset[coin] = asset
+            self.name_to_coin[coin] = coin
+            pair = spot_info.get("tokens") or []
+            if len(pair) < 2:
+                continue
+            try:
+                base_i = int(pair[0])
+                quote_i = int(pair[1])
+            except (TypeError, ValueError):
+                continue
+            base_info = tokens_by_idx.get(base_i)
+            quote_info = tokens_by_idx.get(quote_i)
+            if not base_info or not quote_info:
+                continue
             self.asset_to_sz_decimals[asset] = base_info["szDecimals"]
             name = f'{base_info["name"]}/{quote_info["name"]}'
             if name not in self.name_to_coin:
-                self.name_to_coin[name] = spot_info["name"]
+                self.name_to_coin[name] = coin
 
         perp_dex_to_offset = {"": 0}
         if perp_dexs is None:

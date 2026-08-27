@@ -144,6 +144,25 @@ def test_pairspec_colon_survives_book_key():
     assert book_key("a", spec.symbol_a) == spec.book_a()
 
 
+def test_info_survives_sparse_spot_token_index():
+    """HL 现货 token.index 有空洞；按列表下标取会 IndexError。"""
+    from hyperliquid.info import Info
+
+    meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+    spot_meta = {
+        "tokens": [
+            {"name": "USDC", "szDecimals": 8, "weiDecimals": 8, "index": 0},
+            {"name": "FOO", "szDecimals": 2, "weiDecimals": 8, "index": 610},
+        ],
+        "universe": [
+            {"name": "@465", "index": 0, "tokens": [610, 0]},
+        ],
+    }
+    info = Info(skip_ws=True, meta=meta, spot_meta=spot_meta)
+    assert info.name_to_coin["FOO/USDC"] == "@465"
+    assert info.asset_to_sz_decimals[10000] == 2
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
