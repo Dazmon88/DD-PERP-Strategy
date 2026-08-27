@@ -35,6 +35,8 @@ from hyperliquid.utils.types import Cloid  # type: ignore
 _PERP_MAX_DECIMALS = 6
 # 整数价永远合法，所以 10 万以上直接取整
 _INT_PX_ABOVE = 100_000
+_UNIFIED_MODES = {"unifiedAccount", "portfolioMargin"}
+_STABLE_COINS = {"USDC", "USDH", "USDT0", "USDE", "USDT"}
 
 
 def normalize_hype_symbol(symbol: str) -> str:
@@ -63,6 +65,98 @@ def round_hype_px(px: float, sz_decimals: int) -> float:
         return float(round(value))
     decimals = max(0, _PERP_MAX_DECIMALS - int(sz_decimals))
     return round(float(f"{value:.5g}"), decimals)
+
+
+def _dec(value: Any, default: str = "0") -> Decimal:
+    try:
+        if value is None or value == "":
+            return Decimal(default)
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
+
+
+def is_hype_unified(mode: Any) -> bool:
+    text = str(mode or "").strip().strip('"').strip("'")
+    return text in _UNIFIED_MODES
+
+
+def spot_marks_from_ctxs(meta_and_ctxs: Any) -> Dict[str, Decimal]:
+    """现货 coin → USD 标记价。报价是稳定币的才收。"""
+    marks = {name: Decimal("1") for name in _STABLE_COINS}
+    if not isinstance(meta_and_ctxs, (list, tuple)) or len(meta_and_ctxs) < 2:
+        return marks
+    meta, ctxs = meta_and_ctxs[0] or {}, meta_and_ctxs[1] or []
+    tokens: Dict[int, Dict[str, Any]] = {}
+    for i, tok in enumerate((meta or {}).get("tokens") or []):
+        if not isinstance(tok, dict):
+            continue
+        try:
+            tokens[int(tok.get("index", i))] = tok
+        except (TypeError, ValueError):
+            tokens[i] = tok
+    for i, u in enumerate((meta or {}).get("universe") or []):
+        if i >= len(ctxs or []):
+            break
+        ctx = ctxs[i] or {}
+        px = ctx.get("markPx") or ctx.get("midPx")
+        if px in (None, ""):
+            continue
+        pair = (u or {}).get("tokens") or []
+        if len(pair) < 2:
+            continue
+        try:
+            base = tokens.get(int(pair[0])) or {}
+            quote = tokens.get(int(pair[1])) or {}
+        except (TypeError, ValueError):
+            continue
+        qname = str(quote.get("name") or "")
+        bname = str(base.get("name") or "")
+        if qname in _STABLE_COINS and bname:
+            marks[bname] = _dec(px)
+    return marks
+
+
+def spot_equity_from_state(
+    state: Any, marks: Dict[str, Decimal]
+) -> tuple[Decimal, Decimal]:
+    """现货市值 USD、稳定币可用 USD。unified 下 USDC 优先用 maintenance 后可用。"""
+    equity = Decimal("0")
+    stables_free = Decimal("0")
+    if not isinstance(state, dict):
+        return equity, stables_free
+    for item in state.get("balances") or []:
+        if not isinstance(item, dict):
+            continue
+        coin = str(item.get("coin") or "")
+        total = _dec(item.get("total"))
+        hold = _dec(item.get("hold"))
+        if total == 0 and hold == 0:
+            continue
+        px = marks.get(coin)
+        if px is None:
+            continue
+        equity += total * px
+        free = total - hold
+        if free < 0:
+            free = Decimal("0")
+        if coin in _STABLE_COINS:
+            stables_free += free * px
+    available = stables_free
+    t2a = state.get("tokenToAvailableAfterMaintenance")
+    rows = t2a if isinstance(t2a, list) else []
+    if isinstance(t2a, dict):
+        rows = list(t2a.items())
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        try:
+            if int(row[0]) == 0:
+                available = _dec(row[1])
+                break
+        except (TypeError, ValueError):
+            continue
+    return equity, available
 
 
 def px_tick_at(px: float, sz_decimals: int) -> Decimal:
@@ -151,6 +245,8 @@ class HypeAdapter(BasePerpAdapter):
         self._state_ttl: float = float(config.get("state_ttl_sec", 1.0))
         self._state_cache: Dict[str, Tuple[float, Any]] = {}
         self._sz_decimals: Dict[str, Dict[str, int]] = {}
+        self._abs_cache: Optional[Tuple[float, str]] = None
+        self._mark_cache: Optional[Tuple[float, Dict[str, Decimal]]] = None
 
     # ------------------------------------------------------------------ #
     # 元数据 / 精度
@@ -304,6 +400,34 @@ class HypeAdapter(BasePerpAdapter):
                 return symbol_str.split(":", 1)[0]
         return self._default_dex()
 
+    def _abstraction_mode(self) -> str:
+        now = time.time()
+        hit = self._abs_cache
+        if hit is not None and now - hit[0] < 60.0:
+            return hit[1]
+        mode = "disabled"
+        try:
+            raw = self.info.query_user_abstraction_state(self.address)
+            if isinstance(raw, str) and raw.strip():
+                mode = raw.strip().strip('"').strip("'")
+        except Exception:
+            pass
+        self._abs_cache = (now, mode)
+        return mode
+
+    def _spot_marks(self) -> Dict[str, Decimal]:
+        now = time.time()
+        hit = self._mark_cache
+        if hit is not None and now - hit[0] < 15.0:
+            return hit[1]
+        marks = {name: Decimal("1") for name in _STABLE_COINS}
+        try:
+            marks = spot_marks_from_ctxs(self.info.spot_meta_and_asset_ctxs())
+        except Exception:
+            pass
+        self._mark_cache = (now, marks)
+        return marks
+
     # ------------------------------------------------------------------ #
     # 基础接口实现
     # ------------------------------------------------------------------ #
@@ -318,46 +442,53 @@ class HypeAdapter(BasePerpAdapter):
         return True
 
     def get_balance(self) -> Balance:
+        """净值：unified 看现货市值（永续 clearinghouse 恒为 0）；标准模式永续+现货。
+
+        可用：unified 用 USDC maintenance 后可用（HIP-3 仍要 USDC 保证金）；
+        标准模式用各 dex withdrawable。
         """
-        查询账户余额（以期货账户为主）。
-        """
+        if not self.address:
+            raise Exception("Hype 查询余额失败: 未配置 account_address")
         try:
-            user_state = self.info.user_state(self.address, dex=self._default_dex())
-        except Exception as e:  # pragma: no cover - 直接抛给上层
-            raise Exception(f"Hype 查询余额失败: {e}")
-
-        margin_summary = user_state.get("marginSummary", {}) or {}
-        # accountValue 为账户总权益（现金 + 持仓价值）
-        total_str = margin_summary.get("accountValue", "0")
-        withdrawable_str = user_state.get("withdrawable", "0")
-
-        try:
-            total_val = Decimal(str(total_str))
-        except Exception:
-            total_val = Decimal("0")
-        try:
-            withdrawable_val = Decimal(str(withdrawable_str))
-        except Exception:
-            withdrawable_val = total_val
-
-        position_value = Decimal("0")
-        for item in user_state.get("assetPositions", []) or []:
-            pos = item.get("position") or {}
-            pv_str = pos.get("positionValue") or "0"
+            unified = is_hype_unified(self._abstraction_mode())
+            perp_eq = Decimal("0")
+            perp_av = Decimal("0")
+            position_value = Decimal("0")
+            for dex in self._dex_candidates():
+                state = self._user_state(dex)
+                margin = (state or {}).get("marginSummary") or {}
+                if not unified:
+                    perp_eq += _dec(margin.get("accountValue"))
+                    perp_av += _dec((state or {}).get("withdrawable"))
+                for item in (state or {}).get("assetPositions") or []:
+                    pos = (item or {}).get("position") or {}
+                    position_value += _dec(pos.get("positionValue"))
+            spot_eq = Decimal("0")
+            spot_av = Decimal("0")
             try:
-                position_value += Decimal(str(pv_str))
+                spot_eq, spot_av = spot_equity_from_state(
+                    self.info.spot_user_state(self.address),
+                    self._spot_marks(),
+                )
             except Exception:
                 pass
-
-        return Balance(
-            total_balance=total_val,
-            available_balance=withdrawable_val,
-            equity=total_val,
-            unrealized_pnl=Decimal("0"),
-            margin_used=None,
-            margin_available=None,
-            position_value=position_value,
-        )
+            if unified:
+                equity = spot_eq
+                available = spot_av
+            else:
+                equity = perp_eq + spot_eq
+                available = perp_av
+            return Balance(
+                total_balance=equity,
+                available_balance=available,
+                equity=equity,
+                unrealized_pnl=Decimal("0"),
+                margin_used=None,
+                margin_available=None,
+                position_value=position_value,
+            )
+        except Exception as e:
+            raise Exception(f"Hype 查询余额失败: {e}")
 
     def get_positions(self, symbol: Optional[str] = None) -> List[Position]:
         """
@@ -366,13 +497,23 @@ class HypeAdapter(BasePerpAdapter):
         Hype 返回的 user_state 中：
             user_state["assetPositions"] -> 每个元素包含 position 字段。
         """
-        dex = self._resolve_dex(symbol)
+        dexes = [self._resolve_dex(symbol)] if symbol else self._dex_candidates()
         try:
-            user_state = self.info.user_state(self.address, dex=dex)
+            asset_positions: list = []
+            seen = set()
+            for dex in dexes:
+                user_state = self._user_state(dex)
+                for item in user_state.get("assetPositions", []) or []:
+                    pos_data = item.get("position") or {}
+                    coin = pos_data.get("coin")
+                    key = str(coin or "")
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    asset_positions.append(item)
         except Exception as e:
             raise Exception(f"Hype 查询持仓失败: {e}")
 
-        asset_positions = user_state.get("assetPositions", []) or []
         positions: List[Position] = []
 
         for item in asset_positions:

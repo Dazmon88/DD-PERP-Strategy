@@ -7,6 +7,7 @@
 import asyncio
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 
 STRATEGY_DIR = Path(__file__).resolve().parents[1]
@@ -17,8 +18,11 @@ for _p in (str(STRATEGY_DIR), str(REPO_ROOT)):
 
 from adapters.hype_adapter import (  # noqa: E402
     hype_dex_of,
+    is_hype_unified,
     normalize_hype_symbol,
     resolve_hype_tif,
+    spot_equity_from_state,
+    spot_marks_from_ctxs,
 )
 from adapters.hype_stream import bbo_from_l2, msg_key, sub_key  # noqa: E402
 from accounts import hype_fills_snapshot, parse_hype_fill_coins  # noqa: E402
@@ -161,6 +165,39 @@ def test_info_survives_sparse_spot_token_index():
     info = Info(skip_ws=True, meta=meta, spot_meta=spot_meta)
     assert info.name_to_coin["FOO/USDC"] == "@465"
     assert info.asset_to_sz_decimals[10000] == 2
+
+
+def test_unified_mode_detect():
+    assert is_hype_unified("unifiedAccount")
+    assert is_hype_unified('"portfolioMargin"')
+    assert not is_hype_unified("disabled")
+    assert not is_hype_unified("")
+
+
+def test_spot_marks_and_unified_equity():
+    meta = {
+        "tokens": [
+            {"name": "USDC", "index": 0},
+            {"name": "MAX", "index": 734},
+        ],
+        "universe": [{"name": "@591", "tokens": [734, 0]}],
+    }
+    ctxs = [{"markPx": "7.5"}]
+    marks = spot_marks_from_ctxs([meta, ctxs])
+    assert marks["USDC"] == Decimal("1")
+    assert marks["MAX"] == Decimal("7.5")
+    eq, av = spot_equity_from_state(
+        {
+            "balances": [
+                {"coin": "USDC", "token": 0, "total": "1.5", "hold": "0.5"},
+                {"coin": "MAX", "token": 734, "total": "10", "hold": "0"},
+            ],
+            "tokenToAvailableAfterMaintenance": [[0, "0.8"]],
+        },
+        marks,
+    )
+    assert eq == Decimal("1.5") + Decimal("75")
+    assert av == Decimal("0.8")
 
 
 if __name__ == "__main__":
