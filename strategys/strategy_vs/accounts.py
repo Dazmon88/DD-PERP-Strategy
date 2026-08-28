@@ -150,6 +150,7 @@ class AccountBook:
             other = self._data.get(peer_slot)
             if other is not None:
                 other.pos_qty = 0.0
+                other.ts = time.time()
         return 0.0
 
     def _commit(self, snap: AccountSnap) -> bool:

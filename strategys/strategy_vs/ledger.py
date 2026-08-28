@@ -72,7 +72,7 @@ class _PendingFill:
 
 
 class PositionLedger:
-    """本地仓位：发单即锁层，fill 才改仓，REST 对账失败则禁开。"""
+    """实盘以交易所持仓为账本；在途才锁本地层。纸盘仍按本地成交。"""
 
     def __init__(
         self,
@@ -100,20 +100,22 @@ class PositionLedger:
         self._seq = 0
         self.note = ""
 
+    def _book_pos(self) -> Tuple[float, float]:
+        """空闲实盘用所仓；在途/纸盘用本地仓。"""
+        if self.live and not self.inflight:
+            ea, eb = self.last_exch_a, self.last_exch_b
+            if ea is not None and eb is not None:
+                return float(ea), float(eb)
+        return float(self.pos_a), float(self.pos_b)
+
     @property
     def lots(self) -> int:
         """不足一层的残仓也算 ±1 层，避免 round 成 0 后按空仓再开一整层。"""
-        pa = float(self.pos_a)
+        pa, pb = self._book_pos()
         if abs(pa) <= self.pos_tolerance:
-            pb = float(self.pos_b)
             if abs(pb) <= self.pos_tolerance:
-                ea = self.last_exch_a
-                if ea is not None and abs(float(ea)) > self.pos_tolerance:
-                    pa = float(ea)
-                else:
-                    return 0
-            else:
-                pa = -pb
+                return 0
+            pa = -pb
         n = pa / self.qty_per_layer
         if abs(n) < 1.0 - 1e-12:
             return 1 if n > 0 else -1
@@ -125,7 +127,8 @@ class PositionLedger:
         if not self.is_reduce(int(delta)):
             return full
         cands: List[float] = []
-        for raw in (self.pos_a, self.pos_b, self.last_exch_a, self.last_exch_b):
+        pa, pb = self._book_pos()
+        for raw in (pa, pb, self.last_exch_a, self.last_exch_b):
             if raw is None:
                 continue
             av = abs(float(raw))
@@ -145,7 +148,8 @@ class PositionLedger:
             return STATE_RECONCILE_FAIL
         if self.inflight:
             return STATE_INFLIGHT
-        if abs(self.pos_a) > self.pos_tolerance or abs(self.pos_b) > self.pos_tolerance:
+        pa, pb = self._book_pos()
+        if abs(pa) > self.pos_tolerance or abs(pb) > self.pos_tolerance:
             return STATE_HOLDING
         return STATE_IDLE
 
@@ -205,13 +209,14 @@ class PositionLedger:
     def snapshot(self) -> LedgerSnapshot:
         st = self.state
         exp_a, exp_b = self.expected_exchange()
+        pa, pb = self._book_pos()
         return LedgerSnapshot(
             state=st,
             state_cn=STATE_CN[st],
             lots=self.lots,
             qty_per_layer=self.qty_per_layer,
-            pos_a=self.pos_a,
-            pos_b=self.pos_b,
+            pos_a=pa,
+            pos_b=pb,
             exch_a=self.last_exch_a,
             exch_b=self.last_exch_b,
             exp_a=exp_a,
@@ -367,7 +372,7 @@ class PositionLedger:
         *,
         live: Optional[bool] = None,
     ) -> bool:
-        """交易所仓位只对账。缺数 / 在途 / 未追上成交时跳过，对不上才失败。"""
+        """实盘账本跟所仓。缺数 / 在途 / 非空仓且推送未追上成交时跳过。"""
         now = time.time() if now is None else now
         if live is not None:
             self.live = bool(live)
@@ -383,7 +388,17 @@ class PositionLedger:
         if self.live and self.inflight:
             return True
         ts = min(float(ts_a or 0.0), float(ts_b or 0.0))
-        if self.live and self.last_fill_ts > 0 and ts + 1e-9 < self.last_fill_ts:
+        exch_flat = (
+            abs(float(pos_a)) <= self.pos_tolerance
+            and abs(float(pos_b)) <= self.pos_tolerance
+        )
+        # 非空仓且时间戳落后：可能是刚成交 REST 还没跟上，不能用旧仓盖掉
+        if (
+            self.live
+            and not exch_flat
+            and self.last_fill_ts > 0
+            and ts + 1e-9 < self.last_fill_ts
+        ):
             self.note = "仓位推送未追上成交，跳过对账"
             return True
         if self.exch_a0 is None or self.exch_b0 is None:
@@ -395,21 +410,32 @@ class PositionLedger:
                 )
                 return True
         if self.live:
+            old_a, old_b = self.pos_a, self.pos_b
+            self.pos_a, self.pos_b = float(pos_a), float(pos_b)
+            if exch_flat:
+                self.last_fill_ts = 0.0
             hedge = self._hedge_from_exchange(float(pos_a), float(pos_b))
-            if hedge is not None:
-                pa, pb = hedge
-                note = ""
-                if (
-                    abs(self.pos_a - pa) > self.pos_tolerance
-                    or abs(self.pos_b - pb) > self.pos_tolerance
-                ):
-                    n = int(round(pa / self.qty_per_layer))
-                    self.pos_a, self.pos_b = pa, pb
-                    note = f"按交易所认领 {pa:+.6g}/{pb:+.6g} {n:+d}层"
-                    if abs(n) > self.max_lots:
-                        note += f" 超{self.max_lots}层只平"
-                self._mark_ok(note)
-                return True
+            if hedge is None:
+                self.accounts_ready = True
+                self.reconcile_fail = True
+                self.last_error = (
+                    f"对账失败 A 所 {float(pos_a):+.6g} / "
+                    f"B 所 {float(pos_b):+.6g} 未对锁"
+                )
+                self.note = "禁开，只平"
+                return False
+            changed = (
+                abs(old_a - self.pos_a) > self.pos_tolerance
+                or abs(old_b - self.pos_b) > self.pos_tolerance
+            )
+            note = ""
+            if changed:
+                n = self.lots
+                note = f"按交易所持仓 {self.pos_a:+.6g}/{self.pos_b:+.6g} {n:+d}层"
+                if abs(n) > self.max_lots:
+                    note += f" 超{self.max_lots}层只平"
+            self._mark_ok(note)
+            return True
         exp_a, exp_b = self.expected_exchange()
         assert exp_a is not None and exp_b is not None
         ok_a = abs(float(pos_a) - exp_a) <= self.pos_tolerance

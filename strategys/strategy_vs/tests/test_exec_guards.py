@@ -325,3 +325,45 @@ def test_fit_b_qty_reduce_does_not_bump_dust():
     assert broker._fit_b_qty(Decimal("0.01"), reduce=True) == Decimal("0.01")
     assert broker._fit_b_qty(Decimal("0.01"), reduce=False) == Decimal("0.03")
 
+
+def test_reconcile_flat_adopts_even_if_fill_ts_ahead():
+    """手动平仓后两所都是 0：即使仓位时间戳落后成交，也要认领空仓，不能幽灵持有。"""
+    ledger = PositionLedger(qty_per_layer=0.02, live=True, max_lots=10)
+    ledger.accounts_ready = True
+    ledger.pos_a = -0.2
+    ledger.pos_b = 0.2
+    ledger.exch_a0 = -0.2
+    ledger.exch_b0 = 0.2
+    ledger.last_fill_ts = 1_000.0
+    assert ledger.lots == -10
+    ok = ledger.reconcile(0.0, 0.0, ts_a=900.0, ts_b=900.0, now=1_001.0, live=True)
+    assert ok
+    assert ledger.lots == 0
+    assert abs(ledger.pos_a) < 1e-12
+    assert abs(ledger.pos_b) < 1e-12
+    assert "持仓" in (ledger.note or "")
+
+
+def test_lots_follow_exchange_when_idle():
+    """空闲实盘层数跟所仓：本地幽灵仓不能挡住空仓/实仓。"""
+    ledger = PositionLedger(qty_per_layer=0.02, live=True, max_lots=10)
+    ledger.pos_a = -0.2
+    ledger.pos_b = 0.2
+    ledger.last_exch_a = 0.0
+    ledger.last_exch_b = 0.0
+    assert ledger.lots == 0
+    ledger.last_exch_a = -0.04
+    ledger.last_exch_b = 0.04
+    assert ledger.lots == -2
+
+
+def test_restart_reconcile_adopts_exchange_lots():
+    """重启后账本从 0 开始，第一次对账按所仓认层，不会当空仓再开。"""
+    ledger = PositionLedger(qty_per_layer=0.02, live=True, max_lots=10)
+    assert ledger.lots == 0
+    ok = ledger.reconcile(-0.04, 0.04, ts_a=1.0, ts_b=1.0, live=True)
+    assert ok
+    assert ledger.lots == -2
+    assert abs(ledger.pos_a + 0.04) < 1e-12
+    assert abs(ledger.pos_b - 0.04) < 1e-12
+
