@@ -39,7 +39,11 @@ class AccountSnap:
 
 
 class AccountBook:
-    """仓位：非 0 立刻采用；裸 0 / 空推送沿用上次非 0，直到 REST 与对侧都确认空仓，或本地成交把仓打到 0。"""
+    """仓位：非 0 立刻采用。裸 0 默认沿用上次非 0（Hype REST 会闪空仓）。
+
+    WSS 报 0 认该所；REST 报 0 要对腿 raw 也是 0 才认。对腿看的是原始报数，
+    不是粘性显示，避免两边都平掉后互相卡住。
+    """
 
     def __init__(self) -> None:
         self._data: Dict[str, AccountSnap] = {}
@@ -48,6 +52,7 @@ class AccountBook:
         self._sticky: Dict[str, float] = {}
         self._flat_ok: set[str] = set()
         self._last_rest: Dict[str, float] = {}
+        self._last_raw: Dict[str, float] = {}
         self._peers: Dict[str, str] = {}
         self._fill_seen: set[str] = set()
         self._fill_tape: list = []
@@ -116,6 +121,7 @@ class AccountBook:
                 sticky = float(prev.pos_qty)
                 self._sticky[venue] = sticky
         src = (source or "").lower()
+        self._last_raw[venue] = float(raw)
         if src == "rest":
             self._last_rest[venue] = float(raw)
         if abs(raw) > _POS_EPS:
@@ -129,28 +135,22 @@ class AccountBook:
         if sticky is None or abs(sticky) <= _POS_EPS:
             self._sticky[venue] = 0.0
             return 0.0
-        peer = self._peer_pos(venue)
         peer_slot = self._peer_slot(venue)
-        peer_rest = self._last_rest.get(peer_slot) if peer_slot else None
-        rest_confirms = src == "rest" and (
-            (peer is not None and abs(peer) <= _POS_EPS)
-            or (peer_rest is not None and abs(peer_rest) <= _POS_EPS)
-        )
-        if rest_confirms:
-            self._sticky[venue] = 0.0
-            self._flat_ok.add(venue)
-            if (
-                peer_slot
-                and peer_rest is not None
-                and abs(peer_rest) <= _POS_EPS
-            ):
-                self._flat_ok.add(peer_slot)
-                self._sticky[peer_slot] = 0.0
-                other = self._data.get(peer_slot)
-                if other is not None:
-                    other.pos_qty = 0.0
-            return 0.0
-        return sticky
+        peer_raw = self._last_raw.get(peer_slot) if peer_slot else None
+        peer_also_flat = peer_raw is not None and abs(peer_raw) <= _POS_EPS
+        # WSS 仓位频道报空：该所认 0。REST 空仓仍要等对腿 raw 也空（Hype 会闪 0）。
+        accept = src == "wss" or (src == "rest" and peer_also_flat)
+        if not accept:
+            return sticky
+        self._sticky[venue] = 0.0
+        self._flat_ok.add(venue)
+        if peer_slot and peer_also_flat:
+            self._flat_ok.add(peer_slot)
+            self._sticky[peer_slot] = 0.0
+            other = self._data.get(peer_slot)
+            if other is not None:
+                other.pos_qty = 0.0
+        return 0.0
 
     def _commit(self, snap: AccountSnap) -> bool:
         incoming_balance = snap.equity is not None or snap.available is not None

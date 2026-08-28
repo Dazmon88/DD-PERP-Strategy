@@ -165,6 +165,56 @@ def test_position_patch_wakes_waiters():
     asyncio.run(main())
 
 
+def test_sticky_wss_zero_is_trusted():
+    """RH 仓位 WSS 报 0 应立刻显示空仓，不能被对腿粘性挡住。"""
+
+    async def main():
+        book = AccountBook()
+        book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="wss", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="rest", ts=1.0))
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.0, source="wss", ts=2.0))
+        assert book.latest()["a:ANTH"].pos_qty == 0.0
+        assert abs(book.latest()["b:ANTH"].pos_qty - 0.2) < 1e-12
+
+    asyncio.run(main())
+
+
+def test_sticky_rest_zero_needs_peer_raw_zero():
+    """Hype REST 单独闪 0 不得盖掉仓；两边 raw 都是 0 才能清粘性。"""
+
+    async def main():
+        book = AccountBook()
+        book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="wss", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="rest", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.0, source="rest", ts=2.0))
+        assert abs(book.latest()["b:ANTH"].pos_qty - 0.2) < 1e-12
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.0, source="wss", ts=3.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.0, source="rest", ts=4.0))
+        assert book.latest()["a:ANTH"].pos_qty == 0.0
+        assert book.latest()["b:ANTH"].pos_qty == 0.0
+
+    asyncio.run(main())
+
+
+def test_sticky_manual_flat_both_rest_does_not_deadlock():
+    """两所都 REST 报 0：即使用粘性显示还非 0，第二腿 raw 0 应一次清掉两边。"""
+
+    async def main():
+        book = AccountBook()
+        book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="rest", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="rest", ts=1.0))
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.0, source="rest", ts=2.0))
+        assert abs(book.latest()["a:ANTH"].pos_qty - 0.026) < 1e-12
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.0, source="rest", ts=3.0))
+        assert book.latest()["a:ANTH"].pos_qty == 0.0
+        assert book.latest()["b:ANTH"].pos_qty == 0.0
+
+    asyncio.run(main())
+
+
 def test_hedge_idle_wakes_on_fill_ping():
     wake = ThreadWake()
     broker = DualLegBroker(
