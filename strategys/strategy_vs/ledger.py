@@ -108,10 +108,9 @@ class PositionLedger:
                 return float(ea), float(eb)
         return float(self.pos_a), float(self.pos_b)
 
-    @property
-    def lots(self) -> int:
-        """不足一层的残仓也算 ±1 层，避免 round 成 0 后按空仓再开一整层。"""
-        pa, pb = self._book_pos()
+    def signed_lots(self, pos_a: float, pos_b: float) -> int:
+        """由两所数量算层数。不足一层的残仓也算 ±1，避免 round 成 0 再开一整层。"""
+        pa, pb = float(pos_a), float(pos_b)
         if abs(pa) <= self.pos_tolerance:
             if abs(pb) <= self.pos_tolerance:
                 return 0
@@ -120,6 +119,12 @@ class PositionLedger:
         if abs(n) < 1.0 - 1e-12:
             return 1 if n > 0 else -1
         return int(round(n))
+
+    @property
+    def lots(self) -> int:
+        """空闲实盘跟所仓；在途/纸盘跟本地仓。重启后第一次对账即按所仓认层。"""
+        pa, pb = self._book_pos()
+        return self.signed_lots(pa, pb)
 
     def layer_qty(self, delta: int) -> float:
         """开/加用整层；减仓用剩余实际仓，避免 0.03 去扫 0.01。"""
@@ -328,16 +333,15 @@ class PositionLedger:
         return True
 
     def _hedge_tol(self) -> float:
-        """净敞口容差：整层内视为对锁（允许 A/B 差最多一层的零头）。"""
-        return max(self.pos_tolerance, self.qty_per_layer * 1.0)
+        """净敞口容差：半层以内视为对锁。一整层敞口必须补腿，不能当做成层。"""
+        return max(self.pos_tolerance, self.qty_per_layer * 0.5)
 
     def _hedge_from_exchange(
         self, pos_a: float, pos_b: float
     ) -> Optional[Tuple[float, float]]:
         """两所仓对锁（含空仓）则返回实际仓；否则 None。
 
-        对锁：|A+B| ≤ 半层，且两侧异号或一侧为空。
-        层数由 lots = round(pos_a / qty) 按实际仓计算，不再要求 qty 整数倍。
+        对锁：|A+B| ≤ 半层，且两侧异号或一侧为空。层数由所仓数量计算。
         """
         qa, qb = float(pos_a), float(pos_b)
         tol = self.pos_tolerance

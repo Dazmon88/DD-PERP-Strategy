@@ -73,12 +73,21 @@ def test_circular_hour_range():
 
 
 def test_layer_finish_never_adopts_reverse():
-    assert layer_finish_kind(want_n=-1, got_n=-1, hedged=True, b_moved=True) == "ok"
-    # 减仓 1→-1：对锁但层数反了，必须拧平
-    assert layer_finish_kind(want_n=0, got_n=-1, hedged=True, b_moved=True) == "unwind"
-    assert layer_finish_kind(want_n=-1, got_n=1, hedged=True, b_moved=True) == "unwind"
-    assert layer_finish_kind(want_n=-1, got_n=None, hedged=False, b_moved=True) == "unwind"
-    assert layer_finish_kind(want_n=-1, got_n=None, hedged=False, b_moved=False) == "abort"
+    assert layer_finish_kind(before_n=-1, got_n=-1, hedged=True, b_moved=True) == "ok"
+    # 动手前 +1，所仓对锁在 -1：翻向才拧
+    assert layer_finish_kind(before_n=1, got_n=-1, hedged=True, b_moved=True) == "unwind"
+    assert layer_finish_kind(before_n=-1, got_n=1, hedged=True, b_moved=True) == "unwind"
+    # 对不上：补 A，不拆 B
+    assert layer_finish_kind(before_n=-1, got_n=None, hedged=False, b_moved=True) == "abort"
+    assert layer_finish_kind(before_n=-1, got_n=None, hedged=False, b_moved=False) == "abort"
+
+
+def test_layer_finish_adopts_exchange_lots_not_target():
+    """想加到 -5、所仓已对锁在 -4：认 4 层，不拧。重启后也只看所仓。"""
+    assert layer_finish_kind(before_n=-4, got_n=-4, hedged=True, b_moved=True) == "ok"
+    assert layer_finish_kind(before_n=-4, got_n=-5, hedged=True, b_moved=True) == "ok"
+    assert layer_finish_kind(before_n=0, got_n=-2, hedged=True, b_moved=True) == "ok"
+    assert layer_finish_kind(before_n=2, got_n=0, hedged=True, b_moved=True) == "ok"
 
 
 def test_ahead_pos_uses_whichever_is_further_along():
@@ -366,4 +375,26 @@ def test_restart_reconcile_adopts_exchange_lots():
     assert ledger.lots == -2
     assert abs(ledger.pos_a + 0.04) < 1e-12
     assert abs(ledger.pos_b - 0.04) < 1e-12
+
+
+def test_full_layer_gap_is_not_hedged():
+    """一整层敞口不是对锁：A −0.12 / B +0.09 不能认成 4 层。"""
+    ledger = PositionLedger(qty_per_layer=0.03, live=True, max_lots=10)
+    assert ledger._hedge_from_exchange(-0.12, 0.12) == (-0.12, 0.12)
+    assert ledger.signed_lots(-0.12, 0.12) == -4
+    assert ledger._hedge_from_exchange(-0.12, 0.09) is None
+    assert ledger.signed_lots(-0.12, 0.09) == -4
+
+
+def test_restart_lots_ignore_local_memory():
+    """本地还记着满仓，所仓是 0：层数跟所仓，重启不会按内存再开。"""
+    ledger = PositionLedger(qty_per_layer=0.03, live=True, max_lots=10)
+    ledger.pos_a = -0.3
+    ledger.pos_b = 0.3
+    ledger.last_exch_a = 0.0
+    ledger.last_exch_b = 0.0
+    assert ledger.lots == 0
+    ledger.last_exch_a = -0.09
+    ledger.last_exch_b = 0.09
+    assert ledger.lots == -3
 

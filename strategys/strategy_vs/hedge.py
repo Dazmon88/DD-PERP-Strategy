@@ -227,15 +227,24 @@ def ahead_pos(wss: Decimal, from_fill: Decimal, side: str) -> Decimal:
 
 def layer_finish_kind(
     *,
-    want_n: int,
+    before_n: int,
     got_n: Optional[int],
     hedged: bool,
     b_moved: bool,
+    want_n: Optional[int] = None,
 ) -> str:
-    """一层收尾：齐则认领；B 动过但不齐则市价拧回层前，绝不认领成反向。"""
-    if hedged and got_n == want_n:
-        return "ok"
-    if b_moved:
+    """收尾只看所仓：对锁则认当前层，不要求加到计划层。
+
+    动手前已有仓且所仓翻向，才市价拧回层前。B 动了但对不上，留给补 A，不拆 B。
+    want_n 只作兼容旧调用，不再参与判定。
+    """
+    _ = want_n
+    _ = b_moved
+    if hedged and got_n is not None:
+        if got_n == 0 or int(before_n) == 0:
+            return "ok"
+        if (got_n > 0) == (int(before_n) > 0):
+            return "ok"
         return "unwind"
     return "abort"
 
@@ -771,8 +780,7 @@ class DualLegBroker:
                 _cancel(self.adapter_b, order_id, self.symbol_b)
             self._set_working("")
 
-        # 收尾只看账户仓，不用成交推送/所仓 0 去 ahead_pos：
-        # 回带撤单时 Hype REST 空仓或 fill_since 误计，会把还在的空单当成已平，立刻市价打 A。
+        # 收尾只看所仓数量：当前层 = 对锁后的实际层，不比计划层。
         pos_a = self._pos("a")
         pos_b_book = self._pos("b")
         snap_a.after = pos_a
@@ -781,8 +789,75 @@ class DualLegBroker:
             f"仓位 A {before_a:+.8f}→{pos_a:+.8f} B {before_b:+.8f}→{pos_b_book:+.8f}"
         )
 
-        if yield_exec or self._stop.is_set():
-            why = "进程退出" if self._stop.is_set() else "让出执行"
+        why = ""
+        if self._stop.is_set():
+            why = "进程退出"
+        elif yield_exec:
+            why = "让出执行"
+        moved = abs(pos_a - before_a) > tol or abs(pos_b_book - before_b) > tol
+        hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b_book))
+        if hedge is None and (moved or not why):
+            self._align_a(
+                -pos_b_book,
+                result,
+                label="让出对冲" if why else "收尾对冲",
+            )
+            pos_a = self._pos("a")
+            pos_b_book = self._pos("b")
+            snap_a.after = pos_a
+            snap_b.after = pos_b_book
+            hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b_book))
+
+        before_n = ledger.signed_lots(float(before_a), float(before_b))
+        got_n = (
+            None
+            if hedge is None
+            else ledger.signed_lots(float(hedge[0]), float(hedge[1]))
+        )
+        kind = layer_finish_kind(
+            before_n=before_n,
+            got_n=got_n,
+            hedged=hedge is not None,
+            b_moved=abs(pos_b_book - before_b) > tol,
+        )
+        if kind == "ok":
+            note = "两腿成交"
+            if why:
+                note = f"{why}，所仓已对锁" if moved else why
+            ledger.adopt_exchange(float(pos_a), float(pos_b_book), note=note)
+            if why and not moved:
+                result.ok = False
+                result.error = ""
+                result.note = why
+                result.flattened = False
+                result.logs.append(f"{why}，未动A")
+                return result
+            result.ok = True
+            result.note = note
+            result.logs.append(f"账本 {ledger.state} lots={ledger.lots}")
+            return result
+
+        result.logs.append(
+            f"仓不对齐 A {pos_a:+.8f} B {pos_b_book:+.8f} "
+            f"动手前 {before_n:+d}层 所仓 {got_n}层"
+        )
+        if kind == "unwind":
+            result.logs.append("所仓翻向，双腿市价拧回动手前")
+            self._unwind_to(before_a, before_b, result, tol)
+            pos_a = self._pos_exchange("a")
+            pos_b = self._pos_exchange("b")
+            snap_a.after = pos_a
+            snap_b.after = pos_b
+            ledger.abort_layer("所仓翻向已拧平")
+            result.error = result.error or "所仓翻向"
+            result.note = "所仓翻向已拧平"
+            result.flattened = True
+            result.logs.append(
+                f"拧平后 A {pos_a:+.8f} B {pos_b:+.8f} 账本 lots={ledger.lots}"
+            )
+            return result
+
+        if why and not moved:
             result.logs.append(f"{why}，未动A")
             ledger.abort_layer(why)
             result.ok = False
@@ -791,51 +866,9 @@ class DualLegBroker:
             result.flattened = False
             return result
 
-        b_moved = abs(pos_b_book - before_b) > tol
-        if b_moved:
-            self._align_a(-pos_b_book, result, label="收尾对冲")
-
-        pos_a = self._pos("a")
-        pos_b = self._pos("b")
-        snap_a.after = pos_a
-        snap_b.after = pos_b
-        hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b))
-        want_n = int(round(float(before_a + signed_a) / ledger.qty_per_layer))
-        got_n = None if hedge is None else int(round(hedge[0] / ledger.qty_per_layer))
-        kind = layer_finish_kind(
-            want_n=want_n,
-            got_n=got_n,
-            hedged=hedge is not None,
-            b_moved=abs(pos_b - before_b) > tol,
-        )
-        if kind == "ok":
-            ledger.adopt_exchange(float(pos_a), float(pos_b), note="两腿成交")
-            result.ok = True
-            result.note = "两腿成交"
-            result.logs.append(f"账本 {ledger.state} lots={ledger.lots}")
-            return result
-
-        result.logs.append(
-            f"仓不对齐 A {pos_a:+.8f} B {pos_b:+.8f} 期望层 {want_n:+d} 实层 {got_n}"
-        )
+        ledger.abort_layer(why or "一层未齐")
         result.error = result.error or "一层未齐"
-        if kind == "unwind":
-            result.logs.append("一层未齐，双腿市价拧回层前")
-            self._unwind_to(before_a, before_b, result, tol)
-            pos_a = self._pos_exchange("a")
-            pos_b = self._pos_exchange("b")
-            snap_a.after = pos_a
-            snap_b.after = pos_b
-            ledger.abort_layer("一层未齐已拧平")
-            result.note = "一层未齐已拧平"
-            result.flattened = True
-            result.logs.append(
-                f"拧平后 A {pos_a:+.8f} B {pos_b:+.8f} 账本 lots={ledger.lots}"
-            )
-            return result
-
-        ledger.abort_layer("一层未齐")
-        result.note = "一层未齐"
+        result.note = why or "一层未齐"
         result.ok = False
         result.flattened = False
         return result
@@ -847,7 +880,7 @@ class DualLegBroker:
         result: LayerResult,
         tol: Decimal,
     ) -> None:
-        """一层未齐：两腿市价拧回层前仓，禁止把反向仓认进账本。"""
+        """所仓翻向：两腿市价拧回动手前数量，禁止把反向仓认进账本。"""
         pos_b = self._pos_exchange("b")
         gap_b = target_b - pos_b
         if abs(gap_b) > tol:
