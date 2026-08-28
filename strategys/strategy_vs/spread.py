@@ -231,7 +231,11 @@ class GridTick:
 
 
 class SpreadGrid:
-    """自适应持有带 + 对称网格：上沿以上开一侧，下沿以下开反向；带内持有。同向最多 max_lots 层。"""
+    """自适应持有带 + 对称网格：上沿以上开一侧、下沿以下开反向；带内持有。
+
+    未满仓时上沿冻结以便加层；满仓后带宽只随持仓腿高点上移，反向门槛跟着走，
+    避免价差漂移后下沿钉死、满仓过夜无法反向。
+    """
 
     def __init__(
         self,
@@ -272,24 +276,35 @@ class SpreadGrid:
         ab_samples: Iterable[float],
         ba_samples: Iterable[float],
         current_lots: int = 0,
+        edge: Optional[float] = None,
     ) -> None:
-        """空仓时按窗口重算上下沿；有仓则冻结，避免窗口滑动把持仓扫掉。"""
+        """空仓按窗口重算上下沿；未满仓冻上沿以便加层；满仓后带宽随高点上移。"""
         ab = [float(x) for x in ab_samples]
         ba = [float(x) for x in ba_samples]
         n = min(len(ab), len(ba))
         self.sample_n = n
-        if n < self.min_samples:
-            if current_lots == 0:
+        lots = int(current_lots)
+        if lots == 0:
+            if n < self.min_samples:
                 self.ready = False
                 self.frozen = False
                 self.center = self.lower = self.upper = self.cost = self.width = None
                 self.note = f"采样 {n}/{self.min_samples}"
+                return
+            self._apply_window_band(ab, ba, n)
             return
-        if current_lots != 0 and self.ready and self.lower is not None:
-            self.frozen = True
-            self.note = "有仓，上下沿已冻"
-            return
-        # 每条序列只排一次：窗口大了以后排序是这里的主要开销
+        if not self.ready or self.lower is None or self.upper is None:
+            if n < self.min_samples:
+                return
+            self._apply_window_band(ab, ba, n)
+        self.frozen = True
+        if abs(lots) >= self.max_lots:
+            self._trail_hold_band(edge)
+        else:
+            self.note = "有仓，上沿已冻可加层"
+
+    def _apply_window_band(self, ab: List[float], ba: List[float], n: int) -> None:
+        """按窗口分位重算上下沿。窗口大时排序是主要开销，只在空仓/尚未就绪时走。"""
         mags = sorted(max(ab[i], ba[i]) for i in range(n))
         costs = sorted(-(ab[i] + ba[i]) for i in range(n))
         cost_emp = max(0.0, _percentile_sorted(costs, 50.0))
@@ -312,6 +327,28 @@ class SpreadGrid:
             self.note = "样本波动不够来回费，带宽已撑开"
         else:
             self.note = ""
+        self.dirty = True
+
+    def _trail_hold_band(self, edge: Optional[float]) -> None:
+        """满仓后带宽只上移：下沿=max(原下沿, 现价-带宽)，反向门槛跟着持仓腿高点走。"""
+        if self.lower is None or self.upper is None:
+            return
+        width = self.width if self.width is not None else (self.upper - self.lower)
+        if width <= 0:
+            self.note = "有仓，带宽跟踪"
+            return
+        self.width = width
+        if edge is None:
+            self.note = "有仓，带宽跟踪"
+            return
+        cand_lower = float(edge) - width
+        if cand_lower <= self.lower + 1e-15:
+            self.note = "有仓，带宽跟踪"
+            return
+        self.lower = cand_lower
+        self.upper = cand_lower + width
+        self.center = (self.lower + self.upper) / 2.0
+        self.note = "有仓，带宽上移"
         self.dirty = True
 
     def _crossed(self, edge: float, start: float, *, above: bool) -> int:

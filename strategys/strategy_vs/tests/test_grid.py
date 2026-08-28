@@ -145,6 +145,55 @@ def test_rest_ok_agrees_with_desired_lots():
                 assert g.rest_ok(d, ab, ba, lots) is want
 
 
+# --- 满仓后带宽上移 -----------------------------------------------------
+
+def test_hold_below_max_does_not_trail():
+    """未满仓：上沿冻住，价差再走也不把下沿抬上来，这样才能继续加层。"""
+    g = make_grid(max_lots=5)
+    g.observe([50 * BP] * 5, [-52 * BP] * 5, 2, edge=50 * BP)
+    assert abs(g.lower - 8 * BP) < 1e-15
+    assert abs(g.upper - 20 * BP) < 1e-15
+    assert g.frozen
+    assert "加层" in g.note
+
+
+def test_max_lots_trails_band_up():
+    """满仓后下沿跟到 现价-带宽，反向不再要求回到入场时的下沿。"""
+    g = make_grid(max_lots=2)
+    width = g.width
+    g.observe([], [], 2, edge=40 * BP)
+    assert abs(g.lower - (40 * BP - width)) < 1e-12
+    assert abs(g.upper - 40 * BP) < 1e-12
+    assert "上移" in g.note
+    # 现价贴上沿 → 持有；跌破新下沿才反向
+    assert g.desired_lots(40 * BP, -42 * BP, 2) == 2
+    assert g.peek(40 * BP, -42 * BP, 2).action == "持有"
+    below = g.lower - 0.1 * BP
+    assert g.desired_lots(below, -below - 2 * BP, 2) < 0
+    assert g.peek(below, -below - 2 * BP, 2).action == "反向"
+
+
+def test_max_lots_trail_does_not_drop():
+    """跟踪只上移：价差回落时下沿不跟着掉，否则反向门槛又被推远。"""
+    g = make_grid(max_lots=2)
+    width = g.width
+    g.observe([], [], 2, edge=40 * BP)
+    locked = g.lower
+    g.observe([], [], 2, edge=30 * BP)
+    assert abs(g.lower - locked) < 1e-12
+    assert g.lower > 30 * BP - width
+
+
+def test_flat_observe_unfreezes():
+    g = make_grid()
+    g.observe([], [], 5, edge=40 * BP)
+    assert g.frozen
+    g.observe([14 * BP] * 8, [-16 * BP] * 8, 0)
+    assert not g.frozen
+    assert g.lower is not None
+    assert g.upper > g.lower
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

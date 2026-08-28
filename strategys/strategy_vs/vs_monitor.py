@@ -2,7 +2,8 @@
 """
 两所公共 WSS 盘口对照：按 B 的 role 扣费后的净价差，打印到终端。
 
-网格：样本 + 来回费用自适应上下沿；上沿以上开一侧、下沿以下开反向（带内持有，同向最多 max_lots）。
+网格：样本 + 来回费用自适应上下沿；上沿以上开一侧、下沿以下开反向（带内持有）。
+满仓后带宽随持仓腿高点上移，反向门槛跟着走。
 ledger.live=false 走模拟成交并记 CSV；true 走 DualLegBroker（B 按 role，A 市价，WSS 认仓）。
 """
 from __future__ import annotations
@@ -980,10 +981,17 @@ def _sync_pair_tick(
             # 采样每 tick 都做（上面已 add），但重算上下沿要排序整个窗口，
             # 按 WSS 频率跑会吃满 CPU 并阻塞收包，所以由调用方限流。
             if refresh_band:
+                if lots_now > 0:
+                    hold_edge = legs[0].pct
+                elif lots_now < 0:
+                    hold_edge = legs[1].pct
+                else:
+                    hold_edge = None
                 grid.observe(
                     windows["ab"].values(),
                     windows["ba"].values(),
                     lots_now,
+                    edge=hold_edge,
                 )
             tick = grid.peek(legs[0].pct, legs[1].pct, lots_now)
     return tick, not (a_stale or b_stale), qa, qb
@@ -1173,7 +1181,8 @@ def _render_multi_board(
         elif sample_n < max_samples:
             notes.append(_c("2", f"样本{sample_n}/{max_samples}"))
         if tick is not None and tick.frozen:
-            notes.append(_c("33", "带已冻"))
+            tag = "带上移" if tick.note and "上移" in tick.note else "带跟踪"
+            notes.append(_c("33", tag))
         if tick is not None and tick.note:
             notes.append(_c("2", str(tick.note)))
         if not quotes_ok:
@@ -1201,7 +1210,7 @@ def _render_multi_board(
         ),
         _c(
             "2",
-            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可加层，跌出左端=可反向",
+            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可加层，跌出左端=可反向；满仓后带跟踪上移",
         ),
     ]
     return "\n".join(head + [rule] + body + [rule] + legend)
@@ -1463,7 +1472,7 @@ def _render(
         f"间隔 {_fmt_pct(step)}  "
         f"下一加 {_fmt_pct(next_add)}  下一反向 {_fmt_pct(next_reduce)}  "
         f"来回 {_fmt_pct(cost)}  带宽 {_fmt_pct(band_w)}"
-        + (_c("33", "  已冻") if tick and tick.frozen else "")
+        + (_c("33", "  跟踪") if tick and tick.frozen else "")
         + (_c("2", f"  {tick.note}") if tick and tick.note else "")
     )
     if ledger is not None:
