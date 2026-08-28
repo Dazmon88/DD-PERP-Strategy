@@ -691,6 +691,46 @@ def parse_popdex_fills(message: Any) -> list:
     return out
 
 
+def parse_hype_fills(message: Any) -> list:
+    """userFills 拆成 [{symbol, signed, fill_id}, ...]。snapshot 是历史单，不入带。"""
+    if hype_fills_snapshot(message):
+        return []
+    data = message.get("data") if isinstance(message, dict) else message
+    rows: list = []
+    if isinstance(data, dict):
+        raw = data.get("fills")
+        if isinstance(raw, list):
+            rows = raw
+        elif isinstance(data.get("fill"), dict):
+            rows = [data["fill"]]
+    elif isinstance(data, list):
+        rows = data
+    out: list = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        coin = str(row.get("coin") or row.get("symbol") or "").strip()
+        if not coin:
+            continue
+        qty = _to_float(row.get("sz") or row.get("size") or row.get("qty"))
+        if qty is None or abs(qty) <= 1e-18:
+            continue
+        side = str(row.get("side") or "").strip().upper()
+        if side in ("B", "BUY"):
+            signed = abs(qty)
+        elif side in ("A", "SELL"):
+            signed = -abs(qty)
+        else:
+            continue
+        fid = str(
+            row.get("tid") or row.get("hash") or row.get("oid") or row.get("cloid") or ""
+        ).strip()
+        if not fid:
+            fid = f"{coin}:{signed}:{row.get('time') or i}"
+        out.append({"symbol": coin, "signed": float(signed), "fill_id": str(fid)})
+    return out
+
+
 def parse_hype_fill_coins(message: Any) -> list:
     """userFills 里出现过的 coin。用来决定要不要立刻 REST 刷新仓位。"""
     data = message.get("data") if isinstance(message, dict) else message

@@ -31,6 +31,7 @@ from accounts import (  # noqa: E402
     parse_popdex_positions_map,
     popdex_positions_complete,
     parse_hype_fill_coins,
+    parse_hype_fills,
     hype_fills_snapshot,
 )
 
@@ -1448,13 +1449,24 @@ async def _run_hype(
         )
 
     async def on_fills(message: Dict[str, Any]) -> None:
-        """HL 没有仓位推送频道；成交后立刻 REST 刷新，不必等账户兜底周期。"""
+        """HL 没有仓位推送；成交记入 fill 带让执行器立刻对冲 A，并 REST 刷新粘性仓。"""
         if accounts is None or stop.is_set() or not has_auth:
             return
         coins = parse_hype_fill_coins(message)
         hit = any(_match(c) is not None for c in coins)
         if not hit and not hype_fills_snapshot(message):
             return
+        now = time.time()
+        for item in parse_hype_fills(message):
+            matched = _match(str(item.get("symbol") or ""))
+            if matched is None:
+                continue
+            accounts.ingest_fill(
+                _book_key(matched),
+                float(item["signed"]),
+                str(item["fill_id"]),
+                now,
+            )
         with contextlib.suppress(Exception):
             await _push_account_rest(
                 venue=venue,

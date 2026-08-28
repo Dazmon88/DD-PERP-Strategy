@@ -443,6 +443,12 @@ def _maker_rest_ok(
         or qb.bid is None
         or qb.ask is None
     ):
+        # 平仓锁定期盘口空了也不让出：B 可能已经成交，撤了就再也打不到 A。
+        if getattr(grid, "flatten_sign", 0) != 0 and int(current_lots) != 0:
+            d = int(delta)
+            hold = 1 if int(current_lots) > 0 else -1
+            if int(grid.flatten_sign) == hold:
+                return (int(current_lots) < 0) if d > 0 else (int(current_lots) > 0)
         return False
     ab, ba = _pair_legs_from_quotes(venues, qa, qb)
     return grid.rest_ok(delta, ab.pct, ba.pct, current_lots)
@@ -1873,6 +1879,18 @@ async def _print_loop(
                     allow_open=not block_reason,
                 )
                 if want:
+                    pa_raw, _ = _acct_pos(acct.get(rt.spec.book_a()), now, stale_sec)
+                    pb_raw, _ = _acct_pos(acct.get(rt.spec.book_b()), now, stale_sec)
+                    if (
+                        live
+                        and pa_raw is not None
+                        and pb_raw is not None
+                        and abs(float(pa_raw)) > rt.ledger.pos_tolerance
+                        and abs(float(pb_raw)) > rt.ledger.pos_tolerance
+                        and float(pa_raw) * float(pb_raw) > 0
+                    ):
+                        # 两腿同号：先让 align_a_only 把 A 收到 -B，不要按网格再去加 B。
+                        continue
                     pending.append((rt, tick, want))
             if live:
                 if any(_pair_busy(rt) for rt in runtimes):

@@ -25,7 +25,7 @@ from adapters.hype_adapter import (  # noqa: E402
     spot_marks_from_ctxs,
 )
 from adapters.hype_stream import bbo_from_l2, msg_key, sub_key  # noqa: E402
-from accounts import hype_fills_snapshot, parse_hype_fill_coins  # noqa: E402
+from accounts import hype_fills_snapshot, parse_hype_fill_coins, parse_hype_fills  # noqa: E402
 from feeds import (  # noqa: E402
     Quote,
     QuoteBook,
@@ -85,17 +85,26 @@ def test_parse_user_fills():
             "user": "0xabc",
             "isSnapshot": False,
             "fills": [
-                {"coin": "io:ANTH", "sz": "0.01", "side": "B"},
-                {"coin": "io:SNDK", "sz": "0.01", "side": "A"},
-                {"coin": "io:ANTH", "sz": "0.02", "side": "A"},
+                {"coin": "io:ANTH", "sz": "0.01", "side": "B", "tid": 11},
+                {"coin": "io:SNDK", "sz": "0.01", "side": "A", "tid": 12},
+                {"coin": "io:ANTH", "sz": "0.02", "side": "A", "tid": 13},
             ],
         },
     }
     assert parse_hype_fill_coins(msg) == ["io:ANTH", "io:SNDK"]
     assert hype_fills_snapshot(msg) is False
-    snap = {"data": {"isSnapshot": True, "fills": []}}
+    fills = parse_hype_fills(msg)
+    assert fills == [
+        {"symbol": "io:ANTH", "signed": 0.01, "fill_id": "11"},
+        {"symbol": "io:SNDK", "signed": -0.01, "fill_id": "12"},
+        {"symbol": "io:ANTH", "signed": -0.02, "fill_id": "13"},
+    ]
+    snap = {"data": {"isSnapshot": True, "fills": [
+        {"coin": "io:ANTH", "sz": "0.01", "side": "B", "tid": 99},
+    ]}}
     assert hype_fills_snapshot(snap) is True
-    assert parse_hype_fill_coins(snap) == []
+    assert parse_hype_fill_coins(snap) == ["io:ANTH"]
+    assert parse_hype_fills(snap) == []
 
 
 def test_l2_bbo_and_subscription_keys():
