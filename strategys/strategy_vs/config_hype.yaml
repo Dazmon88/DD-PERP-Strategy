@@ -26,7 +26,7 @@ vs:
     qty: 0.01
     fill_delay_sec: 0
     leg_gap_sec: 0
-    live: false              # 确认盘口/对账正常后再改 true
+    live: true              # 确认盘口/对账正常后再改 true
     timeout_sec: 60
     pos_tolerance: 0.0000001
     reconcile_interval_sec: 2
@@ -37,6 +37,17 @@ vs:
     percentile: [10, 20, 80, 90]
     persist: true
     save_interval_sec: 5
+
+# 最小仓开平 / 双腿一层冒烟（不接入 vs_monitor）
+# dry-run：不加 --live
+# 真单：smoke.enable 改 true，再加 --live
+smoke:
+  enable: false
+  qty: 0.01                 # ANTH/SNDK 名义约 10–20U；再小会被拒
+  side: buy
+  wait_sec: 60
+  timeout_sec: 60           # B Maker 等待；超时撤单
+  venues: both
 
 venues:
   a:
