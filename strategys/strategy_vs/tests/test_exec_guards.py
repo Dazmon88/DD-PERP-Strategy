@@ -21,6 +21,7 @@ from decimal import Decimal
 
 from accounts import AccountBook, AccountSnap, ThreadWake, parse_popdex_fills  # noqa: E402
 from hedge import DualLegBroker, ahead_pos, layer_finish_kind  # noqa: E402
+from ledger import PositionLedger  # noqa: E402
 from spread import (  # noqa: E402
     SpreadWindow,
     _in_circular_range,
@@ -194,4 +195,47 @@ def test_hedge_stop_unblocks_idle():
     t0 = time.perf_counter()
     broker._idle()
     assert time.perf_counter() - t0 < 0.5
+
+
+def test_yield_inband_does_not_touch_a():
+    """回带让出时，即使 fill_since/所仓报 0，也不得市价打 A。"""
+    pos = {"a": Decimal("0.1"), "b": Decimal("-0.1")}
+    adapter_a = MagicMock()
+    adapter_b = MagicMock()
+    adapter_b.get_market_filters.return_value = {
+        "base_inc": Decimal("0.0001"),
+        "quote_inc": Decimal("0.1"),
+        "min_size": Decimal("0.0001"),
+    }
+    adapter_b.get_position.return_value = MagicMock(signed_qty=0, quantity=0, side="net")
+
+    ledger = PositionLedger(qty_per_layer=0.1, live=True, max_lots=2)
+    ledger.accounts_ready = True
+    ledger.pos_a = 0.1
+    ledger.pos_b = -0.1
+
+    broker = DualLegBroker(
+        adapter_a,
+        adapter_b,
+        "SNDK",
+        "io:SNDK",
+        live=True,
+        b_maker=True,
+        timeout_sec=3.0,
+        poll_sec=0.05,
+        pos_lookup=lambda which: pos[which],
+        fill_since=lambda _t0: Decimal("0.1"),
+        rest_ok=lambda: False,
+    )
+    result = broker.execute(ledger, -1, rest_ok=lambda: False)
+    assert result.note == "让出执行"
+    assert "未动A" in " ".join(str(x) for x in result.logs)
+    adapter_a.place_order.assert_not_called()
+    assert pos["a"] == Decimal("0.1")
+    assert pos["b"] == Decimal("-0.1")
+
+
+def test_ahead_pos_buy_zero_must_not_override_short():
+    """所仓 REST 空/0 在买方向上比空单 -0.1 更「靠前」，收尾绝不能用这个去平 A。"""
+    assert ahead_pos(Decimal("0"), Decimal("-0.1"), "buy") == Decimal("0")
 

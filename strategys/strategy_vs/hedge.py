@@ -578,9 +578,13 @@ class DualLegBroker:
                 if a_aligned and b_done:
                     break
 
-                # A 只在 B 本层有增量后才对冲，避免 WSS 假 0 空转
+                rest_blocked = (
+                    self.b_maker and allow_rest is not None and not allow_rest()
+                )
+                # 回带/让出过程禁止动 A：fill_since 或所仓 0 会把未成的减仓当成已平
                 if (
                     (not self._stop.is_set())
+                    and (not rest_blocked)
                     and b_moved
                     and not a_aligned
                     and time.time() - last_align_ts >= hedge_cooldown_sec
@@ -618,12 +622,8 @@ class DualLegBroker:
                         result.a_order_log.append(msg)
                     last_align_ts = time.time()
 
-                # B 挂单逻辑（B 已齐时跳过）
+                # 回带让出优先于「B 已齐」：成交推送假齐时也要撤单离开，不能空等到超时
                 remain = abs(before_b + signed_b - pos_b)
-                if remain <= tol:
-                    self._idle()
-                    continue
-
                 if self.b_maker and allow_rest is not None and not allow_rest():
                     if order_id:
                         result.logs.append(f"价差回带内，撤 {order_id} 让出")
@@ -633,7 +633,6 @@ class DualLegBroker:
                         our_px = None
                         yield_exec = True
                         break
-                    # 未挂单：给盘口抖 1.5s，避免 BTC 刚抢到通道就被 QQQ 立刻挤走
                     if inband_since <= 0:
                         inband_since = time.time()
                         result.logs.append("价差未出带，待挂")
@@ -644,6 +643,10 @@ class DualLegBroker:
                     self._idle()
                     continue
                 inband_since = 0.0
+                if remain <= tol:
+                    self._idle()
+                    continue
+
                 if not self.b_maker:
                     if time.time() - last_taker < 0.4:
                         self._idle()
@@ -759,28 +762,32 @@ class DualLegBroker:
                 _cancel(self.adapter_b, order_id, self.symbol_b)
             self._set_working("")
 
-        # 收尾：B 有增量才再对齐 A（B 没动则不因假 0 去打 Lighter）
-        pos_b = self._pos_b_layer(before_b, signed_b, side_b, layer_t0)
-        try:
-            pos_b = ahead_pos(self._pos_exchange("b"), pos_b, side_b)
-        except Exception:
-            pass
+        # 收尾只看账户仓，不用成交推送/所仓 0 去 ahead_pos：
+        # 回带撤单时 Hype REST 空仓或 fill_since 误计，会把还在的空单当成已平，立刻市价打 A。
         pos_a = self._pos("a")
+        pos_b_book = self._pos("b")
         snap_a.after = pos_a
-        snap_b.after = pos_b
+        snap_b.after = pos_b_book
         result.logs.append(
-            f"仓位 A {before_a:+.8f}→{pos_a:+.8f} B {before_b:+.8f}→{pos_b:+.8f}"
+            f"仓位 A {before_a:+.8f}→{pos_a:+.8f} B {before_b:+.8f}→{pos_b_book:+.8f}"
         )
-        b_moved = abs(pos_b - before_b) > tol
-        if b_moved and not self._stop.is_set():
-            self._align_a(-pos_b, result, label="收尾对冲")
+
+        if yield_exec or self._stop.is_set():
+            why = "进程退出" if self._stop.is_set() else "让出执行"
+            result.logs.append(f"{why}，未动A")
+            ledger.abort_layer(why)
+            result.ok = False
+            result.error = ""
+            result.note = why
+            result.flattened = False
+            return result
+
+        b_moved = abs(pos_b_book - before_b) > tol
+        if b_moved:
+            self._align_a(-pos_b_book, result, label="收尾对冲")
 
         pos_a = self._pos("a")
-        pos_b = self._pos_b_layer(before_b, signed_b, side_b, layer_t0)
-        try:
-            pos_b = ahead_pos(self._pos_exchange("b"), pos_b, side_b)
-        except Exception:
-            pass
+        pos_b = self._pos("b")
         snap_a.after = pos_a
         snap_b.after = pos_b
         hedge = ledger._hedge_from_exchange(float(pos_a), float(pos_b))
@@ -790,7 +797,7 @@ class DualLegBroker:
             want_n=want_n,
             got_n=got_n,
             hedged=hedge is not None,
-            b_moved=b_moved or abs(pos_b - before_b) > tol,
+            b_moved=abs(pos_b - before_b) > tol,
         )
         if kind == "ok":
             ledger.adopt_exchange(float(pos_a), float(pos_b), note="两腿成交")
@@ -803,13 +810,6 @@ class DualLegBroker:
             f"仓不对齐 A {pos_a:+.8f} B {pos_b:+.8f} 期望层 {want_n:+d} 实层 {got_n}"
         )
         result.error = result.error or "一层未齐"
-        if self._stop.is_set():
-            ledger.abort_layer("进程退出")
-            result.ok = False
-            result.error = ""
-            result.note = "进程退出"
-            result.flattened = False
-            return result
         if kind == "unwind":
             result.logs.append("一层未齐，双腿市价拧回层前")
             self._unwind_to(before_a, before_b, result, tol)
@@ -825,13 +825,8 @@ class DualLegBroker:
             )
             return result
 
-        if yield_exec:
-            ledger.abort_layer("让出执行")
-            result.error = ""
-            result.note = "让出执行"
-        else:
-            ledger.abort_layer("一层未齐")
-            result.note = "一层未齐"
+        ledger.abort_layer("一层未齐")
+        result.note = "一层未齐"
         result.ok = False
         result.flattened = False
         return result
