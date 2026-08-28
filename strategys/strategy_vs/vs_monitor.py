@@ -2,8 +2,8 @@
 """
 两所公共 WSS 盘口对照：按 B 的 role 扣费后的净价差，打印到终端。
 
-网格：样本 + 来回费用自适应上下沿；上沿以上开一侧、下沿以下开反向（带内持有）。
-满仓后带宽随持仓腿高点上移，反向门槛跟着走。
+网格：样本 + 来回费用自适应上下沿。空仓越上沿开较好一侧、跌破下沿开对面；
+持仓回到中枢就平，同向按 step 加层。有仓冻带（中枢为止盈）。
 ledger.live=false 走模拟成交并记 CSV；true 走 DualLegBroker（B 按 role，A 市价，WSS 认仓）。
 """
 from __future__ import annotations
@@ -907,19 +907,36 @@ def _trigger_cell(
     step: float,
     max_lots: int,
     width: int,
+    center: Optional[float] = None,
+    ab_pct: Optional[float] = None,
+    ba_pct: Optional[float] = None,
 ) -> str:
-    """距下一次同向加层(+)或反向(-)还差多少 bp。门槛与 desired_lots 一致。"""
+    """距下一步开/加/平还差多少 bp。门槛与 desired_lots 一致。"""
     if mag is None or lower is None or upper is None:
         return _pad(_c("2", "-"), width, "<")
     n = abs(int(lots))
-    up_need = (upper + n * step) - mag if n < max_lots else None
-    # 空仓没有下沿触发：那时 mag 是两腿最大值，跌破只说明两边都差
-    dn_need = (mag - lower) if n else None
+    mid = float(center) if center is not None else (float(lower) + float(upper)) / 2.0
+    fade = (
+        int(lots) < 0
+        and ab_pct is not None
+        and ba_pct is not None
+        and float(ba_pct) < float(ab_pct)
+    )
     cands = []
-    if up_need is not None:
-        cands.append((up_need, f"{'加' if n else '开'}+{up_need * 1e4:.1f}"))
-    if dn_need is not None:
-        cands.append((dn_need, f"反-{dn_need * 1e4:.1f}"))
+    if n == 0:
+        up_need = upper - mag
+        dn_need = mag - lower
+        cands.append((up_need, f"开+{up_need * 1e4:.1f}"))
+        cands.append((dn_need, f"开-{dn_need * 1e4:.1f}"))
+    else:
+        flat_need = (mid - mag) if fade else (mag - mid)
+        cands.append((flat_need, f"平{flat_need * 1e4:.1f}"))
+        if n < max_lots:
+            if fade:
+                add_need = mag - (lower - n * step)
+            else:
+                add_need = (upper + n * step) - mag
+            cands.append((add_need, f"加{add_need * 1e4:.1f}"))
     if not cands:
         return _pad(_c("2", "满仓"), width, "<")
     if min(need for need, _ in cands) <= 0:
@@ -934,7 +951,7 @@ def _band_zone_bar(
     upper: Optional[float],
     width: int,
 ) -> str:
-    """带宽条按所处区间着色：上沿之上=加层区，下沿之下=反向区。"""
+    """带宽条按所处区间着色：上沿之上=开/加层，下沿之下=开对面。"""
     bar = _band_bar(mag, lower, upper, width)
     if mag is None or lower is None or upper is None:
         return _c("2", bar)
@@ -1168,7 +1185,16 @@ def _render_multi_board(
             f"{_band_zone_bar(mag, lower, upper, w_bar)} "
             f"{_fmt_bp_cell(upper, w_edge, signed=False)} "
             + _trigger_cell(
-                mag, lower, upper, lots, rt.grid.step, rt.grid.max_lots, w_trig
+                mag,
+                lower,
+                upper,
+                lots,
+                rt.grid.step,
+                rt.grid.max_lots,
+                w_trig,
+                center=tick.center if tick else rt.grid.center,
+                ab_pct=tick.ab_pct if tick else ab,
+                ba_pct=tick.ba_pct if tick else ba,
             )
             + " "
             + sep
@@ -1181,8 +1207,7 @@ def _render_multi_board(
         elif sample_n < max_samples:
             notes.append(_c("2", f"样本{sample_n}/{max_samples}"))
         if tick is not None and tick.frozen:
-            tag = "带上移" if tick.note and "上移" in tick.note else "带跟踪"
-            notes.append(_c("33", tag))
+            notes.append(_c("33", "带冻结"))
         if tick is not None and tick.note:
             notes.append(_c("2", str(tick.note)))
         if not quotes_ok:
@@ -1210,7 +1235,7 @@ def _render_multi_board(
         ),
         _c(
             "2",
-            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可加层，跌出左端=可反向；满仓后带跟踪上移",
+            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可开/加层，跌出左端=可开对面；有仓冻带，回到中枢就平",
         ),
     ]
     return "\n".join(head + [rule] + body + [rule] + legend)
@@ -1470,9 +1495,9 @@ def _render(
         f"动作 {act}  仓 {hold}  "
         f"{abs(lots)}/{max_lots}层  "
         f"间隔 {_fmt_pct(step)}  "
-        f"下一加 {_fmt_pct(next_add)}  下一反向 {_fmt_pct(next_reduce)}  "
+        f"下一加 {_fmt_pct(next_add)}  下一平 {_fmt_pct(next_reduce)}  "
         f"来回 {_fmt_pct(cost)}  带宽 {_fmt_pct(band_w)}"
-        + (_c("33", "  跟踪") if tick and tick.frozen else "")
+        + (_c("33", "  冻结") if tick and tick.frozen else "")
         + (_c("2", f"  {tick.note}") if tick and tick.note else "")
     )
     if ledger is not None:

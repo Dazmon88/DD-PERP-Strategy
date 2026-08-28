@@ -231,10 +231,9 @@ class GridTick:
 
 
 class SpreadGrid:
-    """自适应持有带 + 对称网格：上沿以上开一侧、下沿以下开反向；带内持有。
+    """均值回归带：空仓越上沿开较好一侧，跌破下沿开对面；持仓回到中枢就平。
 
-    未满仓时上沿冻结以便加层；满仓后带宽只随持仓腿高点上移，反向门槛跟着走，
-    避免价差漂移后下沿钉死、满仓过夜无法反向。
+    同向仍按 step 加层。有仓即冻带，中枢作止盈，不再随高点上移（上移会把止盈带走）。
     """
 
     def __init__(
@@ -278,7 +277,7 @@ class SpreadGrid:
         current_lots: int = 0,
         edge: Optional[float] = None,
     ) -> None:
-        """空仓按窗口重算上下沿；未满仓冻上沿以便加层；满仓后带宽随高点上移。"""
+        """空仓按窗口重算上下沿；有仓冻带（中枢为止盈），满仓也不上移。"""
         ab = [float(x) for x in ab_samples]
         ba = [float(x) for x in ba_samples]
         n = min(len(ab), len(ba))
@@ -299,9 +298,9 @@ class SpreadGrid:
             self._apply_window_band(ab, ba, n)
         self.frozen = True
         if abs(lots) >= self.max_lots:
-            self._trail_hold_band(edge)
+            self.note = "有仓，带宽已冻"
         else:
-            self.note = "有仓，上沿已冻可加层"
+            self.note = "有仓，带宽已冻可加层"
 
     def _apply_window_band(self, ab: List[float], ba: List[float], n: int) -> None:
         """按窗口分位重算上下沿。窗口大时排序是主要开销，只在空仓/尚未就绪时走。"""
@@ -329,28 +328,6 @@ class SpreadGrid:
             self.note = ""
         self.dirty = True
 
-    def _trail_hold_band(self, edge: Optional[float]) -> None:
-        """满仓后带宽只上移：下沿=max(原下沿, 现价-带宽)，反向门槛跟着持仓腿高点走。"""
-        if self.lower is None or self.upper is None:
-            return
-        width = self.width if self.width is not None else (self.upper - self.lower)
-        if width <= 0:
-            self.note = "有仓，带宽跟踪"
-            return
-        self.width = width
-        if edge is None:
-            self.note = "有仓，带宽跟踪"
-            return
-        cand_lower = float(edge) - width
-        if cand_lower <= self.lower + 1e-15:
-            self.note = "有仓，带宽跟踪"
-            return
-        self.lower = cand_lower
-        self.upper = cand_lower + width
-        self.center = (self.lower + self.upper) / 2.0
-        self.note = "有仓，带宽上移"
-        self.dirty = True
-
     def _crossed(self, edge: float, start: float, *, above: bool) -> int:
         """严格越过 start 后，按 step 数出层数。"""
         if above:
@@ -363,13 +340,26 @@ class SpreadGrid:
             return 0
         return 1 + int(gap / self.step - 1e-12)
 
-    def _hold_edge(self, ab_pct: float, ba_pct: float, current_lots: int) -> tuple[float, int]:
-        if current_lots > 0:
+    def _better(self, ab_pct: float, ba_pct: float) -> tuple[float, int]:
+        """较好一侧的净价差与符号：AB>=BA → (+mag, +1 多A)，否则 (− 侧, -1 多B)。"""
+        if float(ab_pct) >= float(ba_pct):
             return float(ab_pct), 1
-        if current_lots < 0:
-            return float(ba_pct), -1
-        sign = 1 if ab_pct >= ba_pct else -1
-        return (float(ab_pct) if sign > 0 else float(ba_pct)), sign
+        return float(ba_pct), -1
+
+    def _band_mag(self, ab_pct: float, ba_pct: float, current_lots: int) -> float:
+        """带宽条用的尺：多A 看 AB；其余看 max(AB,BA)（多B 富腿或下沿淡的溢价）。"""
+        if int(current_lots) > 0:
+            return float(ab_pct)
+        return max(float(ab_pct), float(ba_pct))
+
+    def _mid(self) -> float:
+        if self.center is not None:
+            return float(self.center)
+        return (float(self.lower) + float(self.upper)) / 2.0
+
+    def _fade_short(self, ab_pct: float, ba_pct: float, current_lots: int) -> bool:
+        """下沿开的多B：在淡当时较好的 AB，AB 回到中枢就平。"""
+        return int(current_lots) < 0 and float(ba_pct) < float(ab_pct)
 
     def desired_lots(self, ab_pct: float, ba_pct: float, current_lots: int) -> int:
         if not self.ready or self.lower is None or self.upper is None:
@@ -378,23 +368,40 @@ class SpreadGrid:
         if abs(int(current_lots)) > self.max_lots:
             return (1 if current_lots > 0 else -1) * self.max_lots
         n = abs(int(current_lots))
+        mag, better = self._better(ab_pct, ba_pct)
+        center = self._mid()
         if n == 0:
-            # 空仓时 edge 是 max(ab, ba)：跌破下沿说明两条腿都差，观望即可。
-            # 只有持仓时 edge 才是持仓那条腿，那时跌破下沿才意味着对面变好、该反手。
-            edge, sign = self._hold_edge(ab_pct, ba_pct, 0)
-            add_up = min(self.max_lots, self._crossed(edge, self.upper, above=True))
-            return sign * add_up if add_up > 0 else 0
-        # edge 取持仓方向那条腿，与 mags=max(ab,ba) 标定的上下沿同尺，
-        # 所以多空共用一套判断：越上沿=同向加层，跌破下沿=开反向。
-        hold = 1 if current_lots > 0 else -1
-        edge, _ = self._hold_edge(ab_pct, ba_pct, current_lots)
-        add_up = min(self.max_lots, self._crossed(edge, self.upper, above=True))
-        add_lo = min(self.max_lots, self._crossed(edge, self.lower, above=False))
-        if add_up > n:
-            return hold * add_up
-        if add_lo > 0:
-            return -hold * add_lo
-        return current_lots
+            add_up = min(self.max_lots, self._crossed(mag, self.upper, above=True))
+            if add_up > 0:
+                return better * add_up
+            add_lo = min(self.max_lots, self._crossed(mag, self.lower, above=False))
+            if add_lo > 0:
+                return -better * add_lo
+            return 0
+        if current_lots > 0:
+            # 多A（上沿开的）：AB 回到中枢就平，越上沿同向加层
+            if float(ab_pct) <= center:
+                return 0
+            add_up = min(self.max_lots, self._crossed(ab_pct, self.upper, above=True))
+            if add_up > n:
+                return add_up
+            return n
+        # 多B
+        if float(ba_pct) >= float(ab_pct):
+            # 上沿开的多B：BA 是富腿，回到中枢就平
+            if float(ba_pct) <= center:
+                return 0
+            add_up = min(self.max_lots, self._crossed(ba_pct, self.upper, above=True))
+            if add_up > n:
+                return -add_up
+            return -n
+        # 下沿开的对面多B：淡 AB，溢价回到中枢就平，再往下沿外加层
+        if float(ab_pct) >= center:
+            return 0
+        add_lo = min(self.max_lots, self._crossed(ab_pct, self.lower, above=False))
+        if add_lo > n:
+            return -add_lo
+        return -n
 
     def rest_ok(self, delta: int, ab_pct: float, ba_pct: float, current_lots: int) -> bool:
         """Maker 只在网格仍要求同一方向再走一层时挂着。
@@ -420,7 +427,7 @@ class SpreadGrid:
         else:
             delta = 0
         n = abs(int(current_lots))
-        mag, _ = self._hold_edge(ab_pct, ba_pct, current_lots)
+        mag = self._band_mag(ab_pct, ba_pct, current_lots)
         if not self.ready:
             action = "采样"
         elif current_lots == 0 and delta == 0:
@@ -435,13 +442,21 @@ class SpreadGrid:
             action = "加仓"
         else:
             action = "减仓"
-        # 门槛与 desired_lots 对齐：加层看 upper+n*step，反手固定看 lower（不含 step）
+        # 空仓：上沿开较好一侧、下沿开对面。持仓：中枢为止盈，同向按 step 加层。
         next_add = None
         next_reduce = None
         if self.upper is not None and self.lower is not None:
+            fade = self._fade_short(ab_pct, ba_pct, current_lots)
             if n < self.max_lots:
-                next_add = self.upper + n * self.step
+                if n == 0:
+                    next_add = self.upper
+                elif fade:
+                    next_add = self.lower - n * self.step
+                else:
+                    next_add = self.upper + n * self.step
             if n:
+                next_reduce = self._mid()
+            else:
                 next_reduce = self.lower
         tick = GridTick(
             lots=current_lots,

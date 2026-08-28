@@ -3,6 +3,8 @@
 #
 # A=RH 吃单（taker 0），B=Hype 挂 Maker（ALO）。品种见 pairs_hype.csv。
 #
+# 空仓：越上沿开较好一侧，跌破下沿开对面。持仓：回到中枢就平，同向按 step 加层。
+#
 # 用法（仓库根目录）:
 #   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_hype.yaml
 
