@@ -3,7 +3,7 @@
 两所公共 WSS 盘口对照：按 B 的 role 扣费后的净价差，打印到终端。
 
 网格：样本 + 来回费用自适应上下沿。空仓越上沿开较好一侧、跌破下沿开对面；
-持仓回到中枢就平，同向按 step 加层。有仓冻带（中枢为止盈）。
+多A 现价差 < 中枢再平，下沿多B 现价差 > 中枢再平。有仓冻带。
 ledger.live=false 走模拟成交并记 CSV；true 走 DualLegBroker（B 按 role，A 市价，WSS 认仓）。
 """
 from __future__ import annotations
@@ -939,7 +939,7 @@ def _trigger_cell(
             cands.append((add_need, f"加{add_need * 1e4:.1f}"))
     if not cands:
         return _pad(_c("2", "满仓"), width, "<")
-    if min(need for need, _ in cands) <= 0:
+    if min(need for need, _ in cands) < 0:
         return _pad(_c("1;33", "就绪"), width, "<")
     _, text = min(cands, key=lambda item: item[0])
     return _pad(_c("2", text), width, "<")
@@ -1235,7 +1235,7 @@ def _render_multi_board(
         ),
         _c(
             "2",
-            "带宽位置 “=”为带宽区间、“|”为现价差；| 冲出右端=可开/加层，跌出左端=可开对面；有仓冻带，回到中枢就平",
+            "带宽位置 “=”为带宽区间、“|”为现价差；多A 等 | 跌破中枢再平，下沿多B 等 | 升破中枢再平；有仓冻带",
         ),
     ]
     return "\n".join(head + [rule] + body + [rule] + legend)

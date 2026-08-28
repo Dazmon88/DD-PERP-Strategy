@@ -96,15 +96,35 @@ def test_holding_adds_above_upper():
     assert g.desired_lots(-24.5 * BP, 22.5 * BP, -1) == -3
 
 
-def test_holding_flattens_at_center():
-    """持仓回到中枢就平到 0，不翻面。"""
+def test_holding_flattens_past_center():
+    """贴中枢持有；多A 现价差 < 中枢才平，下沿多B 现价差 > 中枢才平。"""
     g = make_grid()
     center = g.center
-    assert g.desired_lots(center, -center - 2 * BP, 2) == 0
-    assert g.desired_lots(5 * BP, -7 * BP, 2) == 0          # 多A 已低于中枢
-    assert g.desired_lots(-center - 2 * BP, center, -2) == 0  # 多B 富腿回到中枢
-    # 下沿开的多B：AB 涨回中枢就平
-    assert g.desired_lots(center, -center - 2 * BP, -2) == 0
+    assert g.desired_lots(center, -center - 2 * BP, 2) == 2          # 多A 贴中枢持有
+    assert g.desired_lots(5 * BP, -7 * BP, 2) == 0                    # 多A 已低于中枢
+    g.flatten_sign = 0
+    assert g.desired_lots(-center - 2 * BP, center, -2) == -2         # 多B 富腿贴中枢持有
+    g.flatten_sign = 0
+    assert g.desired_lots(-center - 2 * BP, center - BP, -2) == 0     # 富腿跌破中枢
+    g.flatten_sign = 0
+    assert g.desired_lots(center, -center - 2 * BP, -2) == -2         # 下沿多B 贴中枢持有
+    g.flatten_sign = 0
+    assert g.desired_lots(center + BP, -center - 3 * BP, -2) == 0     # 溢价升破中枢
+
+
+def test_flatten_by_position_vs_center():
+    """带宽 85.6–99.0、中枢 92.3：多B 等 bp>中枢，多A 等 bp<中枢。"""
+    g = make_grid(lower=85.6 * BP, upper=99.0 * BP, max_lots=10)
+    assert abs(g.center - 92.3 * BP) < 1e-15
+    # 下沿开的多B（B+ A-）：65.5 满仓持有，92.3 仍持有，92.4 才平（多A空B）
+    assert g.desired_lots(65.5 * BP, -74.0 * BP, -10) == -10
+    assert g.desired_lots(92.3 * BP, -94.3 * BP, -1) == -1
+    assert g.desired_lots(92.4 * BP, -94.4 * BP, -1) == 0
+    g.flatten_sign = 0
+    # 上沿开的多A（A+ B-）：102 满仓持有，92.3 仍持有，92.2 才平（多B空A）
+    assert g.desired_lots(102.0 * BP, -104.0 * BP, 10) == 10
+    assert g.desired_lots(92.3 * BP, -94.3 * BP, 1) == 1
+    assert g.desired_lots(92.2 * BP, -94.2 * BP, 1) == 0
 
 
 def test_holding_stays_between_center_and_upper():
@@ -130,7 +150,9 @@ def test_rich_hold_swap_antisymmetric():
         if edge < other:
             continue
         for lots in (1, 2, 5):
+            g.flatten_sign = 0
             long_t = g.desired_lots(edge, other, lots)
+            g.flatten_sign = 0
             short_t = g.desired_lots(other, edge, -lots)
             assert long_t == -short_t, f"edge={edge/BP:+.1f} lots={lots} 多空不对称"
 
@@ -165,6 +187,7 @@ def test_next_levels_match_desired_lots():
 
     fade = g.peek(10 * BP, -12 * BP, 2)      # lots>0 时仍盯 AB 加层线
     assert fade.next_reduce == g.center
+    g.flatten_sign = 0
     fade_s = g.peek(10 * BP, -12 * BP, -2)
     assert fade_s.next_add == g.lower - 2 * g.step
     assert fade_s.next_reduce == g.center
@@ -178,6 +201,30 @@ def test_peek_action_labels():
     assert g.peek(16 * BP, -18 * BP, 2).action == "持有"
     assert g.peek(25 * BP, -27 * BP, 1).action == "加仓"
     assert g.peek(5 * BP, -7 * BP, 2).action == "减仓"     # 回到中枢：平，不反向
+
+
+def test_flatten_latch_until_empty():
+    """穿越中枢后锁平：价差反弹也不留残层，空仓才解除。"""
+    g = make_grid()
+    assert g.desired_lots(13 * BP, -15 * BP, 2) == 0          # 多A bp<中枢
+    assert g.flatten_sign == 1
+    # 减一层后价差回到上沿内侧，仍必须继续平
+    assert g.desired_lots(16 * BP, -18 * BP, 1) == 0
+    assert g.peek(16 * BP, -18 * BP, 1).action == "减仓"
+    assert g.peek(16 * BP, -18 * BP, 1).next_add is None
+    assert g.rest_ok(-1, 16 * BP, -18 * BP, 1) is True
+    assert g.rest_ok(1, 16 * BP, -18 * BP, 1) is False
+    # 空仓解锁，之后可以重新开
+    assert g.desired_lots(16 * BP, -18 * BP, 0) == 0
+    assert g.flatten_sign == 0
+    assert g.desired_lots(25 * BP, -27 * BP, 0) == 5
+
+    g2 = make_grid()
+    assert g2.desired_lots(15 * BP, -17 * BP, -2) == 0        # 下沿多B bp>中枢
+    assert g2.flatten_sign == -1
+    assert g2.desired_lots(10 * BP, -12 * BP, -1) == 0
+    assert g2.desired_lots(10 * BP, -12 * BP, 0) == 0
+    assert g2.flatten_sign == 0
 
 
 def test_rest_ok_agrees_with_desired_lots():
@@ -214,11 +261,11 @@ def test_max_lots_freezes_band_no_trail():
     assert abs(g.center - 14 * BP) < 1e-15
     assert g.frozen
     assert "上移" not in g.note
-    # 贴上沿仍持有；跌回中枢就平，不翻面
+    # 贴上沿仍持有；跌破中枢才平，不翻面
     assert g.desired_lots(40 * BP, -42 * BP, 2) == 2
     assert g.peek(40 * BP, -42 * BP, 2).action == "持有"
-    assert g.desired_lots(14 * BP, -16 * BP, 2) == 0
-    assert g.peek(14 * BP, -16 * BP, 2).action == "减仓"
+    assert g.desired_lots(13 * BP, -15 * BP, 2) == 0
+    assert g.peek(13 * BP, -15 * BP, 2).action == "减仓"
 
 
 def test_max_lots_freeze_does_not_drop_or_lift():

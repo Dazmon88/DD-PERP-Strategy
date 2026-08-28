@@ -3,7 +3,7 @@
 # ledger.live=true ：网格走双腿真单，开平写入 *_live.csv；断线/对账失败只平不开。
 #
 # 价差 > 上沿 → 开较好一侧（买A卖B 或 买B卖A）；再每高出 step 加 1 层。
-# 价差 < 下沿 → 开对面；再每低于 step 加 1 层。持仓回到中枢就平。有仓冻带。
+# 价差 < 下沿 → 开对面；再每低于 step 加 1 层。多A：现价差<中枢再平；下沿多B：现价差>中枢再平。有仓冻带。
 # venues.b.role=maker 时 B 挂 Maker、带宽用 maker_fee；taker 则两边吃单、用 taker_fee。
 # 运行时 a vs b；品种列表见 vs.pairs_csv（每所一条 WSS，按品种拆盘口/仓位）。
 # exchange 需已有 feed：rh_lighter / lighter / ondoperp / ondo / popdex / hype
