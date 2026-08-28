@@ -393,17 +393,23 @@ class DualLegBroker:
         )
         return filters
 
-    def _fit_b_qty(self, qty: Decimal) -> Decimal:
+    def _fit_b_qty(self, qty: Decimal, *, reduce: bool = False) -> Decimal:
+        """开/加可上取整到最小量；减仓禁止抬过剩余仓（0.01 残仓不能抬成 0.03）。"""
         filters = self._load_b_filters()
         inc = filters["base_inc"]
         min_size = filters["min_size"] or inc
+        cap = qty
         fitted = qty
         if inc > 0:
-            fitted = _round_to_inc(qty, inc, up=True)
-        if min_size > 0 and fitted < min_size:
+            fitted = _round_to_inc(qty, inc, up=not reduce)
+        if not reduce and min_size > 0 and fitted < min_size:
             fitted = min_size
             if inc > 0:
                 fitted = _round_to_inc(fitted, inc, up=True)
+        if reduce and fitted > cap:
+            fitted = _round_to_inc(cap, inc, up=False) if inc > 0 else cap
+            if fitted > cap:
+                fitted = cap
         return fitted
 
     def request_stop(self) -> None:
@@ -503,7 +509,10 @@ class DualLegBroker:
         if delta not in (-1, 1):
             return self._fail_empty(delta, "delta 只能是 ±1")
         self.qty_per_layer = ledger.qty_per_layer
-        qty = Decimal(str(ledger.qty_per_layer))
+        reducing = bool(reduce_only) or ledger.is_reduce(delta)
+        qty = Decimal(str(ledger.layer_qty(delta)))
+        if qty <= 0:
+            return self._fail_empty(delta, "减仓数量为 0")
         side_a = "buy" if delta > 0 else "sell"
         side_b = "sell" if delta > 0 else "buy"
         before_a = self._pos("a")
@@ -710,7 +719,7 @@ class DualLegBroker:
                     self._idle()
                     continue
 
-                place_qty = self._fit_b_qty(remain)
+                place_qty = self._fit_b_qty(remain, reduce=reducing)
                 if place_qty <= 0:
                     result.error = f"B 数量无效 remain={remain}"
                     result.logs.append(result.error)
@@ -843,7 +852,7 @@ class DualLegBroker:
         gap_b = target_b - pos_b
         if abs(gap_b) > tol:
             side = "buy" if gap_b > 0 else "sell"
-            qty = self._fit_b_qty(abs(gap_b))
+            qty = self._fit_b_qty(abs(gap_b), reduce=True)
             if qty > 0:
                 order, err = _place_taker(
                     self.adapter_b,

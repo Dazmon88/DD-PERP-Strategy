@@ -102,7 +102,38 @@ class PositionLedger:
 
     @property
     def lots(self) -> int:
-        return int(round(self.pos_a / self.qty_per_layer))
+        """不足一层的残仓也算 ±1 层，避免 round 成 0 后按空仓再开一整层。"""
+        pa = float(self.pos_a)
+        if abs(pa) <= self.pos_tolerance:
+            pb = float(self.pos_b)
+            if abs(pb) <= self.pos_tolerance:
+                ea = self.last_exch_a
+                if ea is not None and abs(float(ea)) > self.pos_tolerance:
+                    pa = float(ea)
+                else:
+                    return 0
+            else:
+                pa = -pb
+        n = pa / self.qty_per_layer
+        if abs(n) < 1.0 - 1e-12:
+            return 1 if n > 0 else -1
+        return int(round(n))
+
+    def layer_qty(self, delta: int) -> float:
+        """开/加用整层；减仓用剩余实际仓，避免 0.03 去扫 0.01。"""
+        full = float(self.qty_per_layer)
+        if not self.is_reduce(int(delta)):
+            return full
+        cands: List[float] = []
+        for raw in (self.pos_a, self.pos_b, self.last_exch_a, self.last_exch_b):
+            if raw is None:
+                continue
+            av = abs(float(raw))
+            if av > self.pos_tolerance:
+                cands.append(av)
+        if not cands:
+            return full
+        return min(full, min(cands))
 
     @property
     def inflight(self) -> bool:
@@ -210,7 +241,7 @@ class PositionLedger:
             side_a, side_b = "buy", "sell"
         else:
             side_a, side_b = "sell", "buy"
-        qty = self.qty_per_layer
+        qty = self.layer_qty(delta)
         self.orders[cloid_a] = WorkingOrder(cloid_a, "a", side_a, qty)
         self.orders[cloid_b] = WorkingOrder(cloid_b, "b", side_b, qty)
         self.reserved_delta = delta

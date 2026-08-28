@@ -4,7 +4,7 @@
 # A=RH 吃单（taker 0），B=Hype 挂 Maker（ALO）。品种见 pairs_hype.csv。
 #
 # 空仓：越上沿开较好一侧，跌破下沿开对面。
-# 多A（A+B-）现价差 < 中枢 → 平（多B空A）；下沿多B（B+A-）现价差 > 中枢 → 平（多A空B）。
+# 上沿开的仓：现价差 < 中枢再平。下沿开的仓：现价差 > 中枢再平（升破才平）。
 #
 # 用法（仓库根目录）:
 #   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_hype.yaml

@@ -239,3 +239,39 @@ def test_ahead_pos_buy_zero_must_not_override_short():
     """所仓 REST 空/0 在买方向上比空单 -0.1 更「靠前」，收尾绝不能用这个去平 A。"""
     assert ahead_pos(Decimal("0"), Decimal("-0.1"), "buy") == Decimal("0")
 
+
+def test_residual_counts_as_one_lot_and_closes_actual_qty():
+    """一层 0.03、残仓 0.01：仍算 ±1 层，减仓按 0.01 收，不开/不平一整层。"""
+    ledger = PositionLedger(qty_per_layer=0.03, live=True, max_lots=2)
+    ledger.accounts_ready = True
+    ledger.pos_a = 0.01
+    ledger.pos_b = -0.01
+    assert ledger.lots == 1
+    assert ledger.is_reduce(-1)
+    assert abs(ledger.layer_qty(-1) - 0.01) < 1e-12
+    assert abs(ledger.layer_qty(1) - 0.03) < 1e-12
+    cloid_a, cloid_b = ledger.submit_layer(-1)
+    assert cloid_a is not None and cloid_b is not None
+    assert abs(ledger.orders[cloid_a].qty - 0.01) < 1e-12
+    assert abs(ledger.orders[cloid_b].qty - 0.01) < 1e-12
+
+
+def test_fit_b_qty_reduce_does_not_bump_dust():
+    """减仓残量不得按最小量上抬：0.01 不能抬成 0.03。"""
+    adapter_b = MagicMock()
+    adapter_b.get_market_filters.return_value = {
+        "base_inc": Decimal("0.01"),
+        "quote_inc": Decimal("0.01"),
+        "min_size": Decimal("0.03"),
+    }
+    broker = DualLegBroker(
+        MagicMock(),
+        adapter_b,
+        "QQQ",
+        "QQQ-USD.P",
+        live=True,
+        b_maker=True,
+    )
+    assert broker._fit_b_qty(Decimal("0.01"), reduce=True) == Decimal("0.01")
+    assert broker._fit_b_qty(Decimal("0.01"), reduce=False) == Decimal("0.03")
+

@@ -228,14 +228,14 @@ class GridTick:
     ready: bool = False
     frozen: bool = False
     note: str = ""
+    from_lower: bool = False
 
 
 class SpreadGrid:
     """均值回归带：空仓越上沿开较好一侧，跌破下沿开对面。
 
-    持仓按方向穿越中枢再平：多A（A+B-）现价差 < 中枢 → 多B空A 平完；
-    多B（B+A-，下沿淡溢价）现价差 > 中枢 → 多A空B 平完。贴着中枢仍持有。
-    同向按 step 加层。有仓冻带。一开始平仓就锁住减到空仓。
+    上沿开的仓：现价差 < 中枢再平。下沿开的仓：现价差 > 中枢再平（升破才平）。
+    贴着中枢持有。同向按 step 加层。有仓冻带。一开始平仓就锁住减到空仓。
     """
 
     def __init__(
@@ -272,6 +272,7 @@ class SpreadGrid:
         self.sample_n = 0
         self.note = ""
         self.flatten_sign = 0
+        self.entry_from = 0  # +1 下沿开（升破中枢平），-1 上沿开（跌破中枢平）
 
     def observe(
         self,
@@ -349,10 +350,8 @@ class SpreadGrid:
             return float(ab_pct), 1
         return float(ba_pct), -1
 
-    def _band_mag(self, ab_pct: float, ba_pct: float, current_lots: int) -> float:
-        """带宽条用的尺：多A 看 AB；其余看 max(AB,BA)（多B 富腿或下沿淡的溢价）。"""
-        if int(current_lots) > 0:
-            return float(ab_pct)
+    def _band_mag(self, ab_pct: float, ba_pct: float, current_lots: int = 0) -> float:
+        """带宽条用 max(AB,BA)，与上下沿同一把尺。"""
         return max(float(ab_pct), float(ba_pct))
 
     def _mid(self) -> float:
@@ -361,8 +360,10 @@ class SpreadGrid:
         return (float(self.lower) + float(self.upper)) / 2.0
 
     def _fade_short(self, ab_pct: float, ba_pct: float, current_lots: int) -> bool:
-        """下沿开的多B：在淡当时较好的 AB，现价差严格大于中枢再平。"""
-        return int(current_lots) < 0 and float(ba_pct) < float(ab_pct)
+        """下沿开的仓：等现价差升破中枢再平。"""
+        return self.entry_from == 1 or (
+            int(current_lots) < 0 and float(ba_pct) < float(ab_pct)
+        )
 
     def _set_flatten_sign(self, sign: int) -> None:
         want = int(sign)
@@ -372,6 +373,21 @@ class SpreadGrid:
             return
         self.flatten_sign = want
         self.dirty = True
+
+    def _set_entry_from(self, origin: int) -> None:
+        want = int(origin)
+        if want not in (-1, 0, 1):
+            want = 0
+        if self.entry_from == want:
+            return
+        self.entry_from = want
+        self.dirty = True
+
+    def _ensure_entry_from(self, mag: float) -> None:
+        """有仓但还没记下开仓边：现价差已在下沿外则当下沿仓，否则当上沿仓。"""
+        if self.entry_from in (-1, 1) or self.lower is None:
+            return
+        self._set_entry_from(1 if mag < float(self.lower) else -1)
 
     def desired_lots(self, ab_pct: float, ba_pct: float, current_lots: int) -> int:
         if not self.ready or self.lower is None or self.upper is None:
@@ -385,44 +401,39 @@ class SpreadGrid:
         center = self._mid()
         if n == 0:
             self._set_flatten_sign(0)
+            self._set_entry_from(0)
             add_up = min(self.max_lots, self._crossed(mag, self.upper, above=True))
             if add_up > 0:
+                self._set_entry_from(-1)
                 return better * add_up
             add_lo = min(self.max_lots, self._crossed(mag, self.lower, above=False))
             if add_lo > 0:
+                self._set_entry_from(1)
                 return -better * add_lo
             return 0
         mag = self._band_mag(ab_pct, ba_pct, lots)
+        self._ensure_entry_from(mag)
         hold = 1 if lots > 0 else -1
         if self.flatten_sign == hold:
             return 0
-        if lots > 0:
-            # 多A（A+ B-）：现价差严格小于中枢再平（多B空A），贴中枢仍持有
-            if mag < center:
-                self._set_flatten_sign(1)
+        from_lower = self.entry_from == 1
+        if from_lower:
+            # 下沿开的仓：必须升破中枢再平，不能用「小于中枢」
+            if mag > center:
+                self._set_flatten_sign(hold)
                 return 0
-            add_up = min(self.max_lots, self._crossed(ab_pct, self.upper, above=True))
-            if add_up > n:
-                return add_up
-            return n
-        # 多B（B+ A-）
-        if float(ba_pct) >= float(ab_pct):
-            # 上沿开的多B：BA 严格小于中枢再平
-            if mag < center:
-                self._set_flatten_sign(-1)
-                return 0
-            add_up = min(self.max_lots, self._crossed(ba_pct, self.upper, above=True))
-            if add_up > n:
-                return -add_up
-            return -n
-        # 下沿开的对面多B：现价差严格大于中枢再平（多A空B）
-        if mag > center:
-            self._set_flatten_sign(-1)
+            add_lo = min(self.max_lots, self._crossed(mag, self.lower, above=False))
+            if add_lo > n:
+                return hold * add_lo
+            return lots
+        # 上沿开的仓：现价差严格小于中枢再平
+        if mag < center:
+            self._set_flatten_sign(hold)
             return 0
-        add_lo = min(self.max_lots, self._crossed(ab_pct, self.lower, above=False))
-        if add_lo > n:
-            return -add_lo
-        return -n
+        add_up = min(self.max_lots, self._crossed(mag, self.upper, above=True))
+        if add_up > n:
+            return hold * add_up
+        return lots
 
     def rest_ok(self, delta: int, ab_pct: float, ba_pct: float, current_lots: int) -> bool:
         """Maker 只在网格仍要求同一方向再走一层时挂着。
@@ -468,12 +479,12 @@ class SpreadGrid:
         next_add = None
         next_reduce = None
         flattening = self.flatten_sign != 0 and n != 0
+        from_lower = self.entry_from == 1
         if self.upper is not None and self.lower is not None:
-            fade = self._fade_short(ab_pct, ba_pct, current_lots)
             if n < self.max_lots and not flattening:
                 if n == 0:
                     next_add = self.upper
-                elif fade:
+                elif from_lower:
                     next_add = self.lower - n * self.step
                 else:
                     next_add = self.upper + n * self.step
@@ -504,6 +515,7 @@ class SpreadGrid:
             ready=self.ready,
             frozen=self.frozen,
             note=note,
+            from_lower=from_lower,
         )
         self.last = tick
         return tick
@@ -532,6 +544,7 @@ class SpreadGrid:
             "max_lots": self.max_lots,
             "step": self.step,
             "flatten_sign": self.flatten_sign,
+            "entry_from": self.entry_from,
         }
 
     def load(self, data: Optional[Dict[str, Any]]) -> None:
@@ -539,6 +552,7 @@ class SpreadGrid:
         self.peak_n = 0
         self.frozen = False
         self.flatten_sign = 0
+        self.entry_from = 0
         if not data or data.get("mode") != "band":
             self.dirty = False
             return
@@ -561,6 +575,10 @@ class SpreadGrid:
             if sign is not None:
                 s = int(sign)
                 self.flatten_sign = s if s in (-1, 0, 1) else 0
+            origin = data.get("entry_from")
+            if origin is not None:
+                o = int(origin)
+                self.entry_from = o if o in (-1, 0, 1) else 0
         except (TypeError, ValueError):
             return
         self.dirty = False

@@ -910,18 +910,14 @@ def _trigger_cell(
     center: Optional[float] = None,
     ab_pct: Optional[float] = None,
     ba_pct: Optional[float] = None,
+    from_lower: bool = False,
 ) -> str:
     """距下一步开/加/平还差多少 bp。门槛与 desired_lots 一致。"""
     if mag is None or lower is None or upper is None:
         return _pad(_c("2", "-"), width, "<")
     n = abs(int(lots))
     mid = float(center) if center is not None else (float(lower) + float(upper)) / 2.0
-    fade = (
-        int(lots) < 0
-        and ab_pct is not None
-        and ba_pct is not None
-        and float(ba_pct) < float(ab_pct)
-    )
+    fade = bool(from_lower)
     cands = []
     if n == 0:
         up_need = upper - mag
@@ -1195,6 +1191,7 @@ def _render_multi_board(
                 center=tick.center if tick else rt.grid.center,
                 ab_pct=tick.ab_pct if tick else ab,
                 ba_pct=tick.ba_pct if tick else ba,
+                from_lower=bool(tick.from_lower) if tick else False,
             )
             + " "
             + sep
@@ -1947,6 +1944,7 @@ async def _print_loop(
                         )
                         continue
                     lots_before = rt.ledger.lots
+                    layer_qty = rt.ledger.layer_qty(delta)
                     if rt.ledger.is_reduce(delta):
                         action = "减仓"
                     elif lots_before == 0:
@@ -1960,7 +1958,7 @@ async def _print_loop(
                         action=action,
                         delta=delta,
                         lots_before=lots_before,
-                        qty=rt.ledger.qty_per_layer,
+                        qty=layer_qty,
                         px_a=px_a,
                         px_b=px_b,
                     )
@@ -1983,7 +1981,7 @@ async def _print_loop(
                             )
                         runlog.line(
                             f"{action} 开始 delta={delta:+d} lots={lots_before} "
-                            f"qty={rt.ledger.qty_per_layer} reduce={reduce_only}",
+                            f"qty={layer_qty} reduce={reduce_only}",
                             pair=rt.spec.name,
                         )
                         rt.order_task = asyncio.create_task(

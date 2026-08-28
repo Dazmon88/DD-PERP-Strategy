@@ -1,21 +1,17 @@
-# 跨所盘口对照（公共 WSS，终端打印）
-# ledger.live=false：模拟成交，开平写入 *_paper.csv。
-# ledger.live=true ：网格走双腿真单，开平写入 *_live.csv；断线/对账失败只平不开。
+# RH Lighter vs Ondo Perp。密钥：.generated/rh_lighter.json 与 .generated/ondo.json
 #
-# 价差 > 上沿 → 开较好一侧（买A卖B 或 买B卖A）；再每高出 step 加 1 层。
-# 价差 < 下沿 → 开对面；再每低于 step 加 1 层。多A：现价差<中枢再平；下沿多B：现价差>中枢再平。有仓冻带。
-# venues.b.role=maker 时 B 挂 Maker、带宽用 maker_fee；taker 则两边吃单、用 taker_fee。
-# 运行时 a vs b；品种列表见 vs.pairs_csv（每所一条 WSS，按品种拆盘口/仓位）。
-# exchange 需已有 feed：rh_lighter / lighter / ondoperp / ondo / popdex / hype
-# 同所两票（io:ANTH vs io:SNDK）用独立配置，不要改这一份：
-#   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_hype.yaml
+# A=RH 吃单（taker 0），B=Ondo 挂 Maker。品种见 pairs_ondo.csv。
+#
+# 空仓：越上沿开较好一侧，跌破下沿开对面。
+# 上沿开的仓：现价差 < 中枢再平。下沿开的仓：现价差 > 中枢再平（升破才平）。
+# 执行：B maker + A taker。有仓冻带；穿越中枢后锁平至空仓。
 #
 # 用法（仓库根目录）:
-#   python strategys/strategy_vs/vs_monitor.py
+#   python strategys/strategy_vs/vs_monitor.py -c strategys/strategy_vs/config_ondo.yaml
 
 vs:
   pairs_csv: pairs_ondo.csv         # 多对：qty / max_lots / fee_mult 按行；所级 WSS/账户只连一次
-  log_path: vs_monitor.log     # 写在本目录；终端刷新看不清时 tail -f vs_monitor.log
+  log_path: vs_ondo.log
   min_available: 40            # 余额 任一所可用低于此值：只减仓、不开/不加/不反向开
   print_interval_sec: 0.5      # 只管重绘终端；判定由 WSS 推送驱动，不受这个节流
   band_refresh_sec: 0.5        # 上下沿重算间隔（要排序整个窗口，不能按 WSS 频率跑）
