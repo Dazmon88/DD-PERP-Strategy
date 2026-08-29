@@ -19,6 +19,7 @@ vs:
   rest_interval_sec: 1       # WSS 过期后 REST 每秒拉一次盘口，推送恢复后停
   account_rest_sec: 30       # 账户 REST 兜底间隔；WSS 新鲜时不拉
   account_stale_sec: 15      # 账户 WSS 超过此时长未更新才用 REST
+  align_lock_sec: 5          # 下完 A 后锁所仓；5 秒仍不齐则 REST 确认再补一次
   grid:
     fee_mult: 1.3            # 来回成本的安全系数；带宽至少 C×fee_mult
     q_lo: 10                 # 样本宽度用 p10～p90，比手续费更宽则用样本

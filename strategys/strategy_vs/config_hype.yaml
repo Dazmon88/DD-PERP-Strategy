@@ -19,6 +19,7 @@ vs:
   rest_interval_sec: 1
   account_rest_sec: 10       # Hype 没有仓位 WSS，REST 比跨所那套更勤；成交会立刻再拉一次
   account_stale_sec: 15
+  align_lock_sec: 5          # 下完 A 后锁所仓；5 秒仍不齐则 REST 确认再补一次
   grid:
     fee_mult: 1.2
     q_lo: 10

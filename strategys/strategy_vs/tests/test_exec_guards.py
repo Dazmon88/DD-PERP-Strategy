@@ -175,16 +175,46 @@ def test_position_patch_wakes_waiters():
 
 
 def test_sticky_wss_zero_is_trusted():
-    """RH 仓位 WSS 报 0 应立刻显示空仓，不能被对腿粘性挡住。"""
+    """两边都空时，A 所 WSS 报 0 应立刻显示空仓。"""
 
     async def main():
         book = AccountBook()
         book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
         await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="wss", ts=1.0))
-        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="rest", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.0, source="wss", ts=1.0))
         await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.0, source="wss", ts=2.0))
         assert book.latest()["a:ANTH"].pos_qty == 0.0
+
+    asyncio.run(main())
+
+
+def test_a_wss_zero_discarded_if_b_nonzero():
+    """A 所 WSS 报 0 且 B 非 0：当漏品种推送，丢弃，保留 A 原仓。"""
+
+    async def main():
+        book = AccountBook()
+        book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="wss", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="wss", ts=1.0))
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.0, source="wss", ts=2.0))
+        assert abs(book.latest()["a:ANTH"].pos_qty - 0.026) < 1e-12
         assert abs(book.latest()["b:ANTH"].pos_qty - 0.2) < 1e-12
+
+    asyncio.run(main())
+
+
+def test_rest_force_writes_a_zero_even_if_b_open():
+    """5 秒后 REST 确认：force 写入 A 实数，即使 B 仍有仓。"""
+
+    async def main():
+        book = AccountBook()
+        book.set_peers({"a:ANTH": "b:ANTH", "b:ANTH": "a:ANTH"})
+        await book.patch(AccountSnap(venue="a:ANTH", pos_qty=0.026, source="wss", ts=1.0))
+        await book.patch(AccountSnap(venue="b:ANTH", pos_qty=0.2, source="wss", ts=1.0))
+        await book.patch(
+            AccountSnap(venue="a:ANTH", pos_qty=0.0, source="rest", ts=2.0, force=True)
+        )
+        assert book.latest()["a:ANTH"].pos_qty == 0.0
 
     asyncio.run(main())
 
@@ -224,7 +254,24 @@ def test_sticky_manual_flat_both_rest_does_not_deadlock():
     asyncio.run(main())
 
 
-def test_hedge_idle_wakes_on_fill_ping():
+def test_a_align_lock_then_rest_flag():
+    broker = DualLegBroker(
+        MagicMock(),
+        MagicMock(),
+        "BTC",
+        "BTC-USD.P",
+        align_lock_sec=0.05,
+    )
+    broker.lock_a_align()
+    assert broker.a_align_locked()
+    assert not broker.a_lock_expired_need_rest()
+    time.sleep(0.06)
+    assert not broker.a_align_locked()
+    assert broker.a_lock_expired_need_rest()
+    broker.mark_a_rest_done()
+    assert not broker.a_lock_expired_need_rest()
+    broker.clear_a_lock()
+    assert not broker.a_align_locked()
     wake = ThreadWake()
     broker = DualLegBroker(
         MagicMock(),

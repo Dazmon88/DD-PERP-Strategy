@@ -36,13 +36,14 @@ class AccountSnap:
     ts: float = 0.0
     balance_ts: float = 0.0
     error: str = ""
+    force: bool = False
 
 
 class AccountBook:
     """仓位：非 0 立刻采用。裸 0 默认沿用上次非 0（Hype REST 会闪空仓）。
 
-    WSS 报 0 认该所；REST 报 0 要对腿 raw 也是 0 才认。对腿看的是原始报数，
-    不是粘性显示，避免两边都平掉后互相卡住。
+    A 所 WSS 报 0 且 B 所非 0：丢弃本包（Lighter update 常只带变过的市场）。
+    其余：WSS 报 0 认该所；REST 报 0 要对腿 raw 也是 0 才认。force=True 时按 REST 实数写入。
     """
 
     def __init__(self) -> None:
@@ -112,8 +113,31 @@ class AccountBook:
             return None
         return float(snap.pos_qty)
 
+    def _is_a_slot(self, venue: str) -> bool:
+        if venue == "a":
+            return True
+        return str(venue).startswith("a:")
+
+    def _peer_nonzero(self, venue: str) -> bool:
+        """对腿交易所 raw 是否非 0。没有 raw 时才看显示仓。"""
+        slot = self._peer_slot(venue)
+        if slot is None:
+            return False
+        if slot in self._last_raw:
+            return abs(float(self._last_raw[slot])) > _POS_EPS
+        snap = self._data.get(slot)
+        if snap is not None and snap.pos_qty is not None:
+            return abs(float(snap.pos_qty)) > _POS_EPS
+        return False
+
     def _resolve_pos(
-        self, venue: str, raw: float, *, source: str, prev: Optional[AccountSnap]
+        self,
+        venue: str,
+        raw: float,
+        *,
+        source: str,
+        prev: Optional[AccountSnap],
+        force: bool = False,
     ) -> float:
         sticky = self._sticky.get(venue)
         if sticky is None and prev is not None and prev.pos_qty is not None:
@@ -121,14 +145,34 @@ class AccountBook:
                 sticky = float(prev.pos_qty)
                 self._sticky[venue] = sticky
         src = (source or "").lower()
-        self._last_raw[venue] = float(raw)
-        if src == "rest":
-            self._last_rest[venue] = float(raw)
+        if force:
+            self._last_raw[venue] = float(raw)
+            if src == "rest":
+                self._last_rest[venue] = float(raw)
+            if abs(raw) > _POS_EPS:
+                self._sticky[venue] = float(raw)
+                self._flat_ok.discard(venue)
+            else:
+                self._sticky[venue] = 0.0
+                self._flat_ok.add(venue)
+            return float(raw)
         if abs(raw) > _POS_EPS:
+            self._last_raw[venue] = float(raw)
+            if src == "rest":
+                self._last_rest[venue] = float(raw)
             self._sticky[venue] = float(raw)
             self._flat_ok.discard(venue)
             return float(raw)
-        # raw ≈ 0
+        # raw ≈ 0：A 所 WSS 报 0 且 B 非 0 → 当增量漏品种，丢弃本包
+        if src == "wss" and self._is_a_slot(venue) and self._peer_nonzero(venue):
+            if sticky is not None and abs(sticky) > _POS_EPS:
+                return sticky
+            if prev is not None and prev.pos_qty is not None:
+                return float(prev.pos_qty)
+            return 0.0
+        self._last_raw[venue] = 0.0
+        if src == "rest":
+            self._last_rest[venue] = 0.0
         if venue in self._flat_ok:
             self._sticky[venue] = 0.0
             return 0.0
@@ -184,7 +228,11 @@ class AccountBook:
             snap.pos_qty = prev.pos_qty if prev is not None else None
         else:
             snap.pos_qty = self._resolve_pos(
-                snap.venue, float(raw_pos), source=snap.source, prev=prev
+                snap.venue,
+                float(raw_pos),
+                source=snap.source,
+                prev=prev,
+                force=bool(getattr(snap, "force", False)),
             )
         if incoming_balance:
             snap.balance_ts = float(snap.ts or time.time())

@@ -337,6 +337,7 @@ class DualLegBroker:
         rest_ok: Optional[Callable[[], bool]] = None,
         fill_since: Optional[Callable[[float], Decimal]] = None,
         hedge_cooldown_sec: float = 1.0,
+        align_lock_sec: float = 5.0,
         wake: Optional[ThreadWake] = None,
     ) -> None:
         self.adapter_a = adapter_a
@@ -356,6 +357,9 @@ class DualLegBroker:
         self._rest_ok = rest_ok
         self._fill_since = fill_since
         self.hedge_cooldown_sec = max(0.0, float(hedge_cooldown_sec))
+        self.align_lock_sec = max(0.0, float(align_lock_sec))
+        self._a_lock_until = 0.0
+        self._a_need_rest = False
         self.qty_per_layer: float = 0.0
         self._wake = wake
         self._stop = threading.Event()
@@ -494,11 +498,31 @@ class DualLegBroker:
             from_fill = target
         return ahead_pos(wss, from_fill, side_b)
 
+    def lock_a_align(self) -> None:
+        """A 市价已下：锁住直到所仓对齐或超时，超时后才 REST 再补。"""
+        self._a_lock_until = time.time() + self.align_lock_sec
+        self._a_need_rest = True
+
+    def a_align_locked(self, now: Optional[float] = None) -> bool:
+        return (now if now is not None else time.time()) < self._a_lock_until
+
+    def a_lock_expired_need_rest(self) -> bool:
+        return self._a_need_rest and not self.a_align_locked()
+
+    def mark_a_rest_done(self) -> None:
+        self._a_need_rest = False
+
+    def clear_a_lock(self) -> None:
+        self._a_lock_until = 0.0
+        self._a_need_rest = False
+
     def _credit_a(self, side: str, qty: Decimal) -> None:
-        if self._pos_apply is None or qty <= 0:
+        if qty <= 0:
             return
-        signed = float(qty if side == "buy" else -qty)
-        self._pos_apply("a", signed)
+        if self._pos_apply is not None:
+            signed = float(qty if side == "buy" else -qty)
+            self._pos_apply("a", signed)
+        self.lock_a_align()
 
     def _quotes_b(self) -> tuple[Optional[Decimal], Optional[Decimal]]:
         if self._bbo_lookup is not None:
@@ -593,6 +617,8 @@ class DualLegBroker:
                 b_done = abs(pos_b - (before_b + signed_b)) <= tol
                 b_moved = abs(pos_b - before_b) > tol
 
+                if a_aligned:
+                    self.clear_a_lock()
                 if a_aligned and b_done:
                     break
 
@@ -605,40 +631,54 @@ class DualLegBroker:
                     and (not rest_blocked)
                     and b_moved
                     and not a_aligned
+                    and not self.a_align_locked()
                     and time.time() - last_align_ts >= hedge_cooldown_sec
                 ):
-                    side = "buy" if gap_a > 0 else "sell"
-                    qty_a = abs(gap_a)
-                    order, err = _place_taker(
-                        self.adapter_a,
-                        symbol=self.symbol_a,
-                        side=side,
-                        qty=qty_a,
-                        reduce_only=False,
-                    )
-                    if err:
-                        result.a.error = err
-                        msg = (
-                            f"A 对冲失败 {side} {qty_a} "
-                            f"pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
-                            f"target={cur_target_a:+.8f} err={err}"
+                    if self.a_lock_expired_need_rest():
+                        rest_a = self._pos_exchange("a")
+                        rest_b = self._pos_exchange("b")
+                        self.mark_a_rest_done()
+                        result.logs.append(
+                            f"REST 确认 A {rest_a:+.8f} B {rest_b:+.8f}"
                         )
-                        result.logs.append(msg)
-                        result.a_order_log.append(msg)
-                    else:
-                        oid = str(getattr(order, "order_id", "") or "")
-                        result.a.order_id = oid or result.a.order_id
-                        result.a_order_count += 1
-                        result.a_order_qty += qty_a
-                        self._credit_a(side, qty_a)
-                        msg = (
-                            f"A {side} {qty_a} "
-                            f"pos_a={pos_a:+.8f}→target={cur_target_a:+.8f} "
-                            f"pos_b={pos_b:+.8f} id={oid}"
+                        pos_a = rest_a
+                        gap_a = cur_target_a - pos_a
+                        a_aligned = abs(gap_a) <= tol
+                        if a_aligned:
+                            self.clear_a_lock()
+                    if not a_aligned:
+                        side = "buy" if gap_a > 0 else "sell"
+                        qty_a = abs(gap_a)
+                        order, err = _place_taker(
+                            self.adapter_a,
+                            symbol=self.symbol_a,
+                            side=side,
+                            qty=qty_a,
+                            reduce_only=False,
                         )
-                        result.logs.append(msg)
-                        result.a_order_log.append(msg)
-                    last_align_ts = time.time()
+                        if err:
+                            result.a.error = err
+                            msg = (
+                                f"A 对冲失败 {side} {qty_a} "
+                                f"pos_a={pos_a:+.8f} pos_b={pos_b:+.8f} "
+                                f"target={cur_target_a:+.8f} err={err}"
+                            )
+                            result.logs.append(msg)
+                            result.a_order_log.append(msg)
+                        else:
+                            oid = str(getattr(order, "order_id", "") or "")
+                            result.a.order_id = oid or result.a.order_id
+                            result.a_order_count += 1
+                            result.a_order_qty += qty_a
+                            self._credit_a(side, qty_a)
+                            msg = (
+                                f"A {side} {qty_a} "
+                                f"pos_a={pos_a:+.8f}→target={cur_target_a:+.8f} "
+                                f"pos_b={pos_b:+.8f} id={oid}"
+                            )
+                            result.logs.append(msg)
+                            result.a_order_log.append(msg)
+                        last_align_ts = time.time()
 
                 # 回带让出优先于「B 已齐」：成交推送假齐时也要撤单离开，不能空等到超时
                 remain = abs(before_b + signed_b - pos_b)

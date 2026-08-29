@@ -44,7 +44,7 @@ from feeds import (  # noqa: E402
     taker_fee_of,
     venue_role,
 )
-from hedge import DualLegBroker  # noqa: E402
+from hedge import DualLegBroker, signed_pos  # noqa: E402
 from pairs import (  # noqa: E402
     PairSpec,
     enabled_pairs,
@@ -1702,6 +1702,7 @@ async def _print_loop(
                     str(accounts.signed_fills_since(kb, t0))
                 ),
                 hedge_cooldown_sec=lcfg["hedge_cooldown_sec"],
+                align_lock_sec=float(vs_cfg.get("align_lock_sec", 5.0)),
                 wake=hedge_wake,
                 log=lambda m, name=spec.name: runlog.line(m, pair=name),
             )
@@ -1729,8 +1730,7 @@ async def _print_loop(
 
     session_pnl = CombinedPnl()
     last_margin = ""
-    last_align_any = 0.0
-    align_cooldown = float(vs_cfg.get("align_cooldown_sec", 10.0))
+    align_cooldown = float(vs_cfg.get("align_cooldown_sec", 0.0))
     band_refresh = float(vs_cfg.get("band_refresh_sec", 0.5))
     # 错开各对的重算时点：排序整个窗口要十几毫秒，几对挤在同一帧会明显卡顿
     for i, rt in enumerate(runtimes):
@@ -1799,7 +1799,7 @@ async def _print_loop(
                     runlog.line("风控 可用恢复可开仓")
                 last_margin = block_reason
 
-            if live and now - last_align_any >= align_cooldown:
+            if live:
                 for rt in runtimes:
                     if (
                         rt.hedge is None
@@ -1808,7 +1808,7 @@ async def _print_loop(
                         or not rt.ledger.accounts_ready
                     ):
                         continue
-                    if now - rt.last_align < align_cooldown:
+                    if align_cooldown > 0 and now - rt.last_align < align_cooldown:
                         continue
                     ka, kb = rt.spec.book_a(), rt.spec.book_b()
                     pos_a_raw, _ = _acct_pos(acct.get(ka), now, stale_sec)
@@ -1823,12 +1823,53 @@ async def _print_loop(
                         Decimal("1e-8"),
                     )
                     if abs(_pa - _target) <= _tol:
+                        rt.hedge.clear_a_lock()
                         continue
+                    if rt.hedge.a_align_locked():
+                        continue
+                    if rt.hedge.a_lock_expired_need_rest():
+                        try:
+                            rest_a = await asyncio.to_thread(
+                                signed_pos, rt.hedge.adapter_a, rt.hedge.symbol_a
+                            )
+                            rest_b = await asyncio.to_thread(
+                                signed_pos, rt.hedge.adapter_b, rt.hedge.symbol_b
+                            )
+                        except Exception as exc:
+                            rt.hedge.mark_a_rest_done()
+                            runlog.line(f"REST 确认失败 {exc}", pair=rt.spec.name)
+                            continue
+                        await accounts.patch(
+                            AccountSnap(
+                                venue=ka,
+                                pos_qty=float(rest_a),
+                                source="rest",
+                                ts=now,
+                                force=True,
+                            )
+                        )
+                        await accounts.patch(
+                            AccountSnap(
+                                venue=kb,
+                                pos_qty=float(rest_b),
+                                source="rest",
+                                ts=now,
+                                force=True,
+                            )
+                        )
+                        rt.hedge.mark_a_rest_done()
+                        runlog.line(
+                            f"REST 确认 A {rest_a:+.8f} B {rest_b:+.8f}",
+                            pair=rt.spec.name,
+                        )
+                        _pa, _pb = rest_a, rest_b
+                        _target = -_pb
+                        if abs(_pa - _target) <= _tol:
+                            continue
                     if rt.hedge.qty_per_layer <= 0:
                         rt.hedge.qty_per_layer = rt.ledger.qty_per_layer
                     _ok, _msg, _fields = rt.hedge.align_a_only(_target)
                     rt.last_align = now
-                    last_align_any = now
                     rt.paper.record(
                         action="敞口补仓",
                         delta=1 if (_pa - _target) < 0 else -1,
